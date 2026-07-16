@@ -1,0 +1,24 @@
+# Netlify configuration for CYRIX Discovery.
+#
+# If the site is created from a repository where this app lives in a
+# subdirectory (e.g. alongside other projects), set "Base directory" to
+# `cyrix-discovery` in the Netlify UI — this file is then picked up from here.
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# The app uses hash routing (#invite/…, #innovation), which needs no server
+# support. This SPA fallback additionally guards deep links and any future
+# move to path-based routing.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"

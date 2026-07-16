@@ -1,0 +1,42 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-porcelain-100 text-carbon font-sans antialiased;
+    font-feature-settings: 'ss01';
+  }
+  :focus-visible {
+    @apply outline-none ring-2 ring-pulse-500 ring-offset-2 ring-offset-porcelain-100;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-white rounded-xl border border-porcelain-200 shadow-card;
+  }
+  .eyebrow {
+    @apply font-mono text-[11px] uppercase tracking-[0.14em] text-slate;
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-petrol-700 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-petrol-600 disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-porcelain-300 bg-white px-4 py-2.5 text-sm font-medium text-carbon transition-colors hover:border-petrol-500 hover:text-petrol-700 disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .input {
+    @apply w-full rounded-lg border border-porcelain-300 bg-white px-3 py-2.5 text-sm text-carbon placeholder:text-slate-light focus:border-petrol-500 disabled:bg-porcelain-100 disabled:text-slate;
+  }
+}
+
+/* thin scrollbars for rails */
+.rail-scroll::-webkit-scrollbar { width: 6px; }
+.rail-scroll::-webkit-scrollbar-thumb { background: #cfd9d6; border-radius: 3px; }
