@@ -251,11 +251,22 @@ export function decide(prev: RuntimeState, f: FlagSet, yieldedEvidence: boolean)
   if (s.conversation === 'FRAMING') {
     return finish('FRAME_STATEMENT', '2-FRAME', 'state frame; await acknowledgment', s)
   }
-  // 3. DECLINE — honor, no trust change (§5.1 last row)
+  // 3. DECLINE — honor, no trust change (§5.1 last row). "Advance" must
+  // actually advance: saturate the declined topic, open the next, and when
+  // nothing remains, close gracefully — a participant who declines everything
+  // must never be trapped in an acknowledgment loop (corpus:
+  // decline-everything-never-traps caught exactly that defect).
   if (f.sig_decline) {
     const t = activeTopic(s)
-    const s2 = t ? { ...s, topics: s.topics.map((x) => (x.id === t.id ? { ...x, state: 'SATURATED' as const } : x)), active_topic_id: null } : s
-    return finish('ACKNOWLEDGE_AND_ADVANCE', '3-DECLINE', 'decline honored; topic advanced', s2)
+    let s2 = t
+      ? { ...s, topics: s.topics.map((x) => (x.id === t.id ? { ...x, state: 'SATURATED' as const } : x)), active_topic_id: null }
+      : s
+    const nid = nextTopicId(s2)
+    if (nid) {
+      s2 = { ...s2, active_topic_id: nid, topics: s2.topics.map((x) => (x.id === nid && x.state === 'UNOPENED' ? { ...x, state: 'OPENED' as const } : x)) }
+      return finish('ACKNOWLEDGE_AND_ADVANCE', '3-DECLINE', `decline honored; open:${nid}`, s2)
+    }
+    return finish('ACKNOWLEDGE_AND_ADVANCE', '3-DECLINE', 'decline honored; nothing left — closing', { ...s2, conversation: 'CLOSING', closing_step: 0 })
   }
   // 4. DO_NO_HARM
   if (f.sig_sensitive || f.sig_third_party_eval) {
