@@ -1,16 +1,29 @@
-# Netlify configuration for CYRIX Discovery.
+# Netlify configuration for CYRA Discovery.
 #
 # If the site is created from a repository where this app lives in a
-# subdirectory (e.g. alongside other projects), set "Base directory" to
-# `cyrix-discovery` in the Netlify UI — this file is then picked up from here.
+# subdirectory, set "Base directory" to `cyrix-discovery` in the Netlify UI —
+# this file is then picked up from here.
 
 [build]
   command = "npm run build"
   publish = "dist"
+  functions = "netlify/functions"
 
-# The app uses hash routing (#invite/…, #innovation), which needs no server
-# support. This SPA fallback additionally guards deep links and any future
-# move to path-based routing.
+# Local development: `netlify dev` proxies the Vite server and runs the
+# functions + Blobs locally, so the multi-device flow can be exercised for real.
+[dev]
+  command = "npm run dev"
+  targetPort = 5174
+  port = 8888
+  framework = "vite"
+
+# The pilot API routes itself: api.mts declares `path = '/api/*'` via its Config
+# export, so no redirect is needed here. A redirect would in fact bypass that
+# pattern and strip the route splat.
+
+# Hash routing needs no server support. This SPA fallback guards deep links and
+# any future move to path-based routing. It must not shadow /api/*, which the
+# function claims first.
 [[redirects]]
   from = "/*"
   to = "/index.html"
@@ -22,3 +35,11 @@
     X-Frame-Options = "DENY"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
+
+# Interview data is organizational data — never let it be indexed or cached
+# by an intermediary.
+[[headers]]
+  for = "/api/*"
+  [headers.values]
+    Cache-Control = "no-store"
+    X-Robots-Tag = "noindex"

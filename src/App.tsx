@@ -7,6 +7,7 @@ import { Dashboard } from './screens/Dashboard'
 import { GraphScreen } from './screens/Graph'
 import { SettingsModal } from './screens/Settings'
 import { InitiativeLabel, ModuleLabel, Wordmark } from './components/ui'
+import { fetchState, getAdminToken, setAdminToken } from './api'
 
 // ---------------------------------------------------------------------------
 // Two experiences, split by URL:
@@ -17,8 +18,6 @@ import { InitiativeLabel, ModuleLabel, Wordmark } from './components/ui'
 // Participants never see navigation or any internal surface.
 // ---------------------------------------------------------------------------
 
-const ACCESS_KEY = 'cyrix-innovation-access'
-const ACCESS_CODE = 'cyrix2026' // front-end gate for the internal deployment; move behind real auth with the first backend
 
 type Tab = 'dashboard' | 'people' | 'graph'
 
@@ -65,16 +64,36 @@ function InviteRequired() {
 // ---------- Access gate ----------
 
 function GatedInnovation({ initialTab }: { initialTab: Tab }) {
-  const [granted, setGranted] = useState(() => localStorage.getItem(ACCESS_KEY) === 'granted')
-  if (!granted) {
-    return <AccessGate onGranted={() => { localStorage.setItem(ACCESS_KEY, 'granted'); setGranted(true) }} />
-  }
+  const [granted, setGranted] = useState(() => Boolean(getAdminToken()))
+  if (!granted) return <AccessGate onGranted={() => setGranted(true)} />
   return <InnovationShell initialTab={initialTab} />
 }
 
+// The credential is verified by the server (ADMIN_TOKEN env var), not compared
+// against a constant compiled into the public bundle. A wrong token cannot read
+// a single record.
 function AccessGate({ onGranted }: { onGranted: () => void }) {
   const [code, setCode] = useState('')
-  const [wrong, setWrong] = useState(false)
+  const [wrong, setWrong] = useState<string | null>(null)
+  const [checking, setChecking] = useState(false)
+
+  async function attempt(e: React.FormEvent) {
+    e.preventDefault()
+    setChecking(true)
+    setWrong(null)
+    setAdminToken(code.trim())
+    try {
+      await fetchState() // the server decides
+      onGranted()
+    } catch (err) {
+      setAdminToken('')
+      const status = (err as { status?: number }).status
+      setWrong(status === 401 ? "That access token isn't right." : 'Could not reach the server. Try again shortly.')
+    } finally {
+      setChecking(false)
+    }
+  }
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-neutral-050 px-6">
       <div className="card w-full max-w-sm p-6">
@@ -82,24 +101,20 @@ function AccessGate({ onGranted }: { onGranted: () => void }) {
         <div className="mt-2"><InitiativeLabel /></div>
         <h1 className="mt-6 font-display text-heading font-heavy text-ink">Innovation Dashboard</h1>
         <p className="mt-2 text-bodySmall text-neutral-700">Restricted to the Innovation Team and Founders.</p>
-        <form
-          className="mt-6"
-          onSubmit={(e) => {
-            e.preventDefault()
-            if (code === ACCESS_CODE) onGranted()
-            else setWrong(true)
-          }}
-        >
+        <form className="mt-6" onSubmit={attempt}>
+          <label className="eyebrow mb-2 block" htmlFor="admin-token">Access token</label>
           <input
+            id="admin-token"
             type="password"
             value={code}
-            onChange={(e) => { setCode(e.target.value); setWrong(false) }}
-            placeholder="Access code"
-            className="input font-sans"
+            onChange={(e) => { setCode(e.target.value); setWrong(null) }}
+            className="input"
             autoFocus
           />
-          {wrong && <p className="mt-2 text-label text-error">That code isn't right.</p>}
-          <button type="submit" className="btn-primary mt-4 w-full">Enter</button>
+          {wrong && <p className="mt-2 text-label text-error">{wrong}</p>}
+          <button type="submit" disabled={!code.trim() || checking} className="btn-primary mt-4 w-full">
+            {checking ? 'Checking' : 'Enter'}
+          </button>
         </form>
       </div>
     </div>

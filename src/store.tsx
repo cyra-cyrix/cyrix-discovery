@@ -1,133 +1,141 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Interview, Invite, Person, Settings } from './types'
+import * as api from './api'
 
-// v4: people-first discovery model — people are the primary entity; interviews
-// are keyed by person; the org structure emerges from interviews. No seed data.
-const STORAGE_KEY = 'cyrix-discovery-v4'
-const ARCHIVE_KEY = 'cyrix-discovery-archive'
+// Shared persistence. The domain model is unchanged — people (primary),
+// interviews (keyed by person), invites (keyed by token) — but it now lives
+// centrally instead of in one browser, so a link works on any device and the
+// Innovation Dashboard sees interviews the moment they land.
+//
+// Only `settings` remains browser-local: it is a per-operator UI preference,
+// not organizational data. The Anthropic key is no longer here at all — it is
+// a server env var (netlify/functions/_ai.mts).
 
-/** Preserve a replaced interview so no discovery is ever silently lost. */
-export function archiveInterview(interview: Interview): void {
-  try {
-    const raw = localStorage.getItem(ARCHIVE_KEY)
-    const list = raw ? (JSON.parse(raw) as Interview[]) : []
-    list.push(interview)
-    localStorage.setItem(ARCHIVE_KEY, JSON.stringify(list))
-  } catch {
-    // archive is best-effort
-  }
-}
+const SETTINGS_KEY = 'cyra-settings'
+const POLL_MS = 15000
 
-interface PersistedState {
-  people: Record<string, Person> // keyed by person id
-  interviews: Record<string, Interview> // keyed by person id
-  invites: Record<string, Invite> // keyed by token
+interface StoreValue {
+  people: Record<string, Person>
+  interviews: Record<string, Interview>
+  invites: Record<string, Invite>
   settings: Settings
-}
-
-interface StoreValue extends PersistedState {
-  upsertPerson: (person: Person) => void
-  removePerson: (personId: string) => void
-  setInterview: (personId: string, interview: Interview) => void
-  updateInterview: (personId: string, patch: (prev: Interview) => Interview) => void
-  resetInterview: (personId: string) => void
-  upsertInvite: (invite: Invite) => void
+  /** null until the first load resolves; surfaces a real backend error. */
+  loadError: string | null
+  loading: boolean
+  refresh: () => Promise<void>
+  upsertPerson: (person: Person) => Promise<void>
+  removePerson: (personId: string) => Promise<void>
+  upsertInvite: (invite: Invite) => Promise<void>
+  setInterview: (personId: string, interview: Interview) => Promise<void>
+  updateInterview: (personId: string, patch: (prev: Interview) => Interview) => Promise<void>
+  resetInterview: (personId: string) => Promise<void>
   setSettings: (s: Settings) => void
-  resetAll: () => void
 }
 
-const defaultState = (): PersistedState => ({
-  people: {},
-  interviews: {},
-  invites: {},
-  settings: { apiKey: '', model: 'claude-opus-4-8' },
-})
+const defaultSettings = (): Settings => ({ apiKey: '', model: 'claude-opus-4-8' })
 
-function load(): PersistedState {
+function loadSettings(): Settings {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return defaultState()
-    const parsed = JSON.parse(raw) as Partial<PersistedState>
-    if (!parsed.interviews || !parsed.settings) return defaultState()
-    return { ...defaultState(), ...parsed, people: parsed.people ?? {}, invites: parsed.invites ?? {} }
+    const raw = localStorage.getItem(SETTINGS_KEY)
+    return raw ? { ...defaultSettings(), ...JSON.parse(raw) } : defaultSettings()
   } catch {
-    return defaultState()
+    return defaultSettings()
   }
 }
 
 const StoreContext = createContext<StoreValue | null>(null)
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<PersistedState>(load)
+  const [people, setPeople] = useState<Record<string, Person>>({})
+  const [interviews, setInterviews] = useState<Record<string, Interview>>({})
+  const [invites, setInvites] = useState<Record<string, Invite>>({})
+  const [settings, setSettingsState] = useState<Settings>(loadSettings)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const mounted = useRef(true)
+
+  useEffect(() => () => { mounted.current = false }, [])
 
   useEffect(() => {
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)) } catch { /* non-fatal */ }
+  }, [settings])
+
+  const refresh = useCallback(async () => {
+    // Only the Innovation Team reads the whole dataset; participants never do.
+    if (!api.getAdminToken()) { setLoading(false); return }
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-    } catch {
-      // storage full or unavailable — keep running in memory
+      const state = await api.fetchState()
+      if (!mounted.current) return
+      setPeople(state.people)
+      setInterviews(state.interviews)
+      setInvites(state.invites)
+      setLoadError(null)
+    } catch (e) {
+      if (!mounted.current) return
+      setLoadError(e instanceof Error ? e.message : 'Could not reach the server.')
+    } finally {
+      if (mounted.current) setLoading(false)
     }
-  }, [state])
-
-  const upsertPerson = useCallback((person: Person) => {
-    setState((s) => ({ ...s, people: { ...s.people, [person.id]: person } }))
   }, [])
 
-  const removePerson = useCallback((personId: string) => {
-    setState((s) => {
-      const people = { ...s.people }
-      delete people[personId]
-      const interviews = { ...s.interviews }
-      const existing = interviews[personId]
-      if (existing) {
-        archiveInterview(existing)
-        delete interviews[personId]
-      }
-      return { ...s, people, interviews }
+  useEffect(() => { void refresh() }, [refresh])
+
+  // "The dashboard immediately reflects completed interviews" — a background
+  // analysis finishes server-side, so the client polls while it is watching.
+  useEffect(() => {
+    if (!api.getAdminToken()) return
+    const tick = () => { if (document.visibilityState === 'visible') void refresh() }
+    const id = setInterval(tick, POLL_MS)
+    document.addEventListener('visibilitychange', tick)
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', tick) }
+  }, [refresh])
+
+  // Each mutation writes through to shared storage, then updates locally so the
+  // UI stays responsive. A failed write surfaces rather than silently diverging.
+  const upsertPerson = useCallback(async (person: Person) => {
+    await api.putPerson(person)
+    setPeople((p) => ({ ...p, [person.id]: person }))
+  }, [])
+
+  const removePerson = useCallback(async (personId: string) => {
+    await api.deletePerson(personId)
+    setPeople((p) => { const next = { ...p }; delete next[personId]; return next })
+    setInterviews((i) => { const next = { ...i }; delete next[personId]; return next })
+  }, [])
+
+  const upsertInvite = useCallback(async (invite: Invite) => {
+    await api.putInvite(invite)
+    setInvites((i) => ({ ...i, [invite.token]: invite }))
+  }, [])
+
+  const setInterview = useCallback(async (personId: string, interview: Interview) => {
+    setInterviews((i) => ({ ...i, [personId]: interview }))
+  }, [])
+
+  const updateInterview = useCallback(async (personId: string, patch: (prev: Interview) => Interview) => {
+    setInterviews((prev) => {
+      const current = prev[personId]
+      if (!current) return prev
+      return { ...prev, [personId]: patch(current) }
     })
   }, [])
 
-  const setInterview = useCallback((personId: string, interview: Interview) => {
-    setState((s) => ({ ...s, interviews: { ...s.interviews, [personId]: interview } }))
-  }, [])
+  const resetInterview = useCallback(async (personId: string) => {
+    const current = interviews[personId]
+    if (current) await api.putInterview({ ...current, status: 'not_started', messages: [], facts: [] })
+    setInterviews((i) => { const next = { ...i }; delete next[personId]; return next })
+  }, [interviews])
 
-  const updateInterview = useCallback((personId: string, patch: (prev: Interview) => Interview) => {
-    setState((s) => {
-      const prev = s.interviews[personId]
-      if (!prev) return s
-      return { ...s, interviews: { ...s.interviews, [personId]: patch(prev) } }
-    })
-  }, [])
+  const setSettings = useCallback((s: Settings) => setSettingsState(s), [])
 
-  const resetInterview = useCallback((personId: string) => {
-    setState((s) => {
-      const interviews = { ...s.interviews }
-      const existing = interviews[personId]
-      if (existing) archiveInterview(existing)
-      delete interviews[personId]
-      return { ...s, interviews }
-    })
-  }, [])
-
-  const upsertInvite = useCallback((invite: Invite) => {
-    setState((s) => ({ ...s, invites: { ...s.invites, [invite.token]: invite } }))
-  }, [])
-
-  const setSettings = useCallback((settings: Settings) => {
-    setState((s) => ({ ...s, settings }))
-  }, [])
-
-  const resetAll = useCallback(() => {
-    setState((s) => {
-      for (const iv of Object.values(s.interviews)) archiveInterview(iv)
-      return { ...defaultState(), settings: s.settings }
-    })
-  }, [])
-
-  const value = useMemo<StoreValue>(
-    () => ({ ...state, upsertPerson, removePerson, setInterview, updateInterview, resetInterview, upsertInvite, setSettings, resetAll }),
-    [state, upsertPerson, removePerson, setInterview, updateInterview, resetInterview, upsertInvite, setSettings, resetAll],
-  )
+  const value = useMemo<StoreValue>(() => ({
+    people, interviews, invites, settings, loadError, loading,
+    refresh, upsertPerson, removePerson, upsertInvite,
+    setInterview, updateInterview, resetInterview, setSettings,
+  }), [people, interviews, invites, settings, loadError, loading, refresh,
+       upsertPerson, removePerson, upsertInvite, setInterview, updateInterview,
+       resetInterview, setSettings])
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>
 }

@@ -18,23 +18,57 @@ Routing is parsed **once at module load** in `src/App.tsx` (`parseRoute()`); the
 
 - **`#invite/<token>`** → **Discovery Conversation Portal** (`src/screens/Portal.tsx`) — the only surface participants ever see. The token identifies the *person invited*; their department is asked as optional free text and discovered by the interview. Tokens are self-validating (11 base36 chars + checksum); ALL validation lives in `src/invites.ts` (`lookupDecision`) — the single seam a future backend replaces. Flow: Welcome → Basic context → Conversation (voice or text, switchable mid-stream) → "What I understood" confirmation → Submit → Thank you. **No navigation, no settings, no reports, no hint that anything else exists.** Participants never see the generated report. The bare URL shows an invitation-required notice. A participant arriving without a roster record auto-creates one (`personFromContext`).
 - **`#innovation` (= Dashboard, the landing page), `#innovation/people`, `#innovation/graph`** → **Innovation Dashboard** — everything else. **People** (`screens/People.tsx`) is the roster + invitation manager in one (add/edit person: name, designation, email, phone, state, reporting manager, optional department; generate/copy/regenerate/disable their link; status; completion date). Gated by a front-end access code (`ACCESS_CODE` in `App.tsx`, flag persisted in localStorage under `cyrix-innovation-access`). This is demo-grade gating — move behind real auth when a backend exists.
-- **Deployment:** static Netlify site — `netlify.toml` + step-by-step `DEPLOY_NETLIFY.md`. No env vars; never put an API key in a `VITE_*` variable (it would be public).
+- **Deployment:** Netlify site + functions — `netlify.toml` + step-by-step `DEPLOY_NETLIFY.md`. Requires `ADMIN_TOKEN` and `ANTHROPIC_API_KEY` env vars; never put either in a `VITE_*` variable (it would be public). Netlify Drop cannot deploy the pilot — it skips functions.
 - Internally, opening a not-yet-interviewed person renders the *same* `Portal` component with `internal` + `presetPersonId` props (nav stays visible; completion shows the report). There is deliberately **one** conversation implementation — do not fork a second interview UI.
 
 ## Two Engines, One Contract
 
 Every interview runs on one of two interchangeable engines; both must keep producing the same shapes:
 
-- **Live** (`src/engine/claude.ts`): browser → Claude API directly (`dangerouslyAllowBrowser`; key from Settings, localStorage only). Per turn: one `messages.create` call with structured output (`output_config.format` json_schema, `TURN_SCHEMA`) returning `{reply, facts[], coverage}`. Final analysis: one **streaming** call (`REPORT_SCHEMA`) returning profile + report + opportunities + graph edges. Uses `claude-opus-4-8` by default (picker in Settings). Requires `@anthropic-ai/sdk` ≥ 0.111 — older versions don't type `output_config`.
+- **Live** (`src/engine/claude.ts` → `POST /api/ai` → `netlify/functions/_ai.mts`): the browser holds no key; the server calls Claude. Per turn: one `messages.create` with structured output (`TURN_SCHEMA`) returning `{reply, facts[], coverage}` — short, fits the sync budget. Final analysis: a **streaming** call (`REPORT_SCHEMA`) in `analysis-background.mts`. Prompts/schemas are imported unchanged from `src/engine/prompts.ts` — one interviewer, one analyst. Uses `claude-opus-4-8` by default. Requires `@anthropic-ai/sdk` ≥ 0.111 (`output_config`).
 - **Simulated** (`src/engine/simulated.ts`): offline adaptive interviewer — regex **signal table** picks contextual follow-ups from the latest answer, else it probes the least-covered dimension; analysis is synthesized from collected facts. This is the no-API-key fallback and the guarantee the portal never dead-ends (live errors silently fall back to it mid-conversation).
 
 **When you change the analysis output shape, update all three in lockstep:** `src/types.ts` (Report/Opportunity/etc.), `REPORT_SCHEMA` + report prompt in `src/engine/prompts.ts`, and the synthesis in `src/engine/simulated.ts`. Missing one produces silent `undefined`s in the dashboard. Both engines must return `AnalysisResult` including the discovered `departmentName`.
 
 Cross-interview memory: `priorFindingsFor()` (prompts.ts) feeds severe pain points from completed interviews into every later interview's system prompt; the Graph derives cross-team patterns from shared pain categories. Note the engines differ on edges by design: the live engine extracts any team the conversation names (including not-yet-interviewed ones, drawn as dashed "mentioned" nodes); the offline engine can only link to *already discovered* team names, so its graph fills in as interviews accumulate.
 
-## State & Persistence
+## State & Persistence — SHARED, not browser-local
 
-No backend. `src/store.tsx` is a React context persisted to localStorage under `cyrix-discovery-v4` (bump the key when the persisted shape changes — old data is simply abandoned). It holds three maps: `people` (primary), `interviews` (**keyed by person id**), `invites` (keyed by token). **The platform starts clean — there is no seed/demo data and none may be reintroduced** (rollout rule: every insight is earned from real interviews). Until the first interview completes, the Dashboard renders `VisionDashboard` (Dashboard.tsx) — an executive command-center vision state with honest zeros — and swaps to the real intelligence view afterwards. **One interview per person**; starting a new conversation for a person (or any reset/removal) archives the old interview to `cyrix-discovery-archive` (best-effort, never silently destroyed).
+**Discovery is a multi-device pilot: data is organizational, not per-browser.** This is
+the correction that unblocked the rollout — invitations, people, interviews and reports
+live centrally, so a link opens on a department head's own phone and the interview
+appears on the Innovation Team's dashboard.
+
+- **Server:** `netlify/functions/` — `api.mts` (one sync router, `path = '/api/*'`),
+  `analysis-background.mts` (the long report; exceeds the sync budget), `_store.mts`
+  (Netlify Blobs; the storage seam), `_ai.mts` (Claude; the key seam).
+- **Client:** `src/api.ts` is the only place that knows a backend exists. `src/store.tsx`
+  keeps the same context API (`upsertPerson`, `upsertInvite`, `setInterview`…) but writes
+  through to the server; mutations are async and a failed write surfaces rather than
+  silently diverging. The dashboard polls every 15s while visible.
+- **Only `settings` stays local** (a per-operator UI preference). No domain data in
+  localStorage; the admin token is the sole other local value.
+- **Swapping the datastore** (e.g. to Supabase, 13 § build reality) touches `_store.mts`
+  and `src/api.ts` only — no domain type moves.
+
+**Auth is real now.** `ADMIN_TOKEN` and `ANTHROPIC_API_KEY` are Netlify env vars.
+The Innovation Team's token is verified **server-side** — the old bundled `ACCESS_CODE`
+was decorative and is gone. Participants authenticate with their invitation token; the
+Anthropic key never reaches a browser (which is why the client bundle dropped ~180 kB).
+**Never** expose either as `VITE_*` — that compiles into the public bundle.
+
+**Invariants that bit once — keep them:**
+- *Two engines, one contract.* If Claude is unavailable the **server** falls back to
+  `simulatedAnalysis` so a participant's twenty minutes never dead-end. Routing only the
+  live path server-side broke this once.
+- *The organization is discovered.* `analysis-background` back-fills the discovered team
+  onto the person record — the roster learns from the conversation, not an org chart.
+- An interview must never be left in `generating` with no explanation: on total failure it
+  is stored as `analysis_failed` **with the transcript and facts preserved**.
+- The SPA fallback (`/*` → `/index.html`) must never shadow `/api/*`.
+
+Local development: `netlify dev` (port 8888) runs the functions and Blobs for real;
+plain `npm run dev` serves the UI without an API. Copy `.env.example` → `.env` first.
 
 ## Commands
 

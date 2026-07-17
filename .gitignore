@@ -1,0 +1,22 @@
+# Secrets — never commit. Server config lives in Netlify env vars.
+.env
+.env.*
+!.env.example
+
+# Dependencies — restored by `npm ci` at build time.
+node_modules/
+
+# Build output — Netlify builds this from source.
+dist/
+
+# Netlify local state
+.netlify/
+
+# Generated from cyra-tokens.json by `npm run tokens` (13 § token pipeline).
+# Committed deliberately? No: it is generated, and prebuild regenerates it.
+src/tokens.css
+
+# OS / editor
+.DS_Store
+*.log
+deno.lock

@@ -1,0 +1,67 @@
+// The report analysis. It runs here, not in the sync API, because a 16k-token
+// structured generation takes ~40-90s — well past the synchronous function
+// budget. Background functions get a long budget but answer 202 immediately,
+// so the participant's browser polls GET /api/interview/:token.
+//
+// This is why the portal's copy — "This takes about a minute. You can leave
+// this page and come back — nothing is lost" — is now literally true: the work
+// happens server-side and the result lands in shared storage either way.
+
+import type { Interview, Person } from '../../src/types.ts'
+import { discoveredDepartments } from '../../src/org.ts'
+import { simulatedAnalysis } from '../../src/engine/simulated.ts'
+import { allInterviews, getInterview, getPerson, putInterview, putPerson } from './_store.mts'
+import { runAnalysis } from './_ai.mts'
+
+export default async (req: Request) => {
+  const { personId } = await req.json()
+  const interview = (await getInterview(personId)) as Interview | null
+  if (!interview) return new Response('no such interview', { status: 404 })
+
+  // Emergent org context: the offline analyst can only draw edges to teams
+  // other interviews have already revealed.
+  const everyone = await allInterviews<Interview>()
+  const knownNames = discoveredDepartments(everyone).map((d) => d.name)
+
+  let analysis: ReturnType<typeof simulatedAnalysis> | Awaited<ReturnType<typeof runAnalysis>>
+  let mode: Interview['mode'] = 'live'
+  try {
+    analysis = await runAnalysis(interview)
+  } catch {
+    // Two engines, one contract. If the server cannot reach Claude, the
+    // offline analyst still produces a report from the same facts — a
+    // participant's twenty minutes must never end in a dead end.
+    try {
+      analysis = simulatedAnalysis(interview, knownNames)
+      mode = 'simulated'
+    } catch (err) {
+      await putInterview({
+        ...interview,
+        status: 'analysis_failed',
+        analysisError: err instanceof Error ? err.message : 'The analysis could not be completed.',
+      } as Interview)
+      return new Response('analysis failed')
+    }
+  }
+
+  await putInterview({
+    ...interview,
+    status: 'complete',
+    mode,
+    completedAt: Date.now(),
+    departmentName: analysis.departmentName,
+    profile: analysis.profile,
+    report: analysis.report,
+    opportunities: analysis.opportunities,
+    edges: analysis.edges,
+  })
+
+  // The organization is discovered, not declared: write the team the interview
+  // revealed back onto the person record, so the roster learns from the
+  // conversation rather than from an org chart.
+  const person = (await getPerson(personId)) as Person | null
+  if (person && analysis.departmentName && !person.department) {
+    await putPerson({ ...person, department: analysis.departmentName })
+  }
+  return new Response('ok')
+}

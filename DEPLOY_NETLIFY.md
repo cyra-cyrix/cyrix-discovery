@@ -1,7 +1,10 @@
-# Deploying CYRIX Discovery to Netlify
+# Deploying CYRA Discovery to Netlify
 
-Step-by-step instructions for the first internal deployment. The app is a fully
-static Vite build — no server, no database — so Netlify's free tier is sufficient.
+Step-by-step instructions for the multi-device pilot. The app is a Vite build plus two
+small Netlify Functions and Netlify Blobs for shared storage — all on the free tier.
+
+Data is stored **centrally**, which is what lets an invitation open on a department
+head's own phone and the interview appear on the Innovation Team's dashboard.
 
 ---
 
@@ -15,7 +18,7 @@ static Vite build — no server, no database — so Netlify's free tier is suffi
 ## 2. Connect the GitHub repository
 
 > If the code isn't on GitHub yet: create a repository, then from the project folder
-> `git init && git add . && git commit -m "CYRIX Discovery"` and push per GitHub's instructions.
+> `git init && git add . && git commit -m "CYRA Discovery"` and push per GitHub's instructions.
 
 1. In Netlify: **Add new site → Import an existing project → GitHub**.
 2. Authorize Netlify and pick the repository.
@@ -24,9 +27,8 @@ static Vite build — no server, no database — so Netlify's free tier is suffi
    the repository root, leave it empty.
 4. The included `netlify.toml` supplies the rest automatically.
 
-**No GitHub?** Use **Netlify Drop** instead: run `npm run build` locally and drag the
-`dist/` folder onto [app.netlify.com/drop](https://app.netlify.com/drop). Instant, but
-every update is a manual re-drag — prefer the Git flow.
+**Netlify Drop will not work for the pilot.** Dragging `dist/` deploys the static site
+only — no functions, so no shared storage. Use the Git flow.
 
 ## 3. Build command
 
@@ -47,14 +49,24 @@ dist
 
 ## 5. Environment variables
 
-**None are required.** The app is fully client-side:
+**Two are required.** Set both under **Site configuration → Environment variables**, then
+redeploy (env vars are read at request time by the functions, but a redeploy is the
+simplest way to be certain).
 
-- The Claude API key is **not** a build-time variable. It is entered by the Innovation
-  Team in the app's Settings and stored only in that browser's localStorage.
-- **Never** add an Anthropic API key as a `VITE_*` variable — anything prefixed `VITE_`
-  is baked into the public JavaScript bundle and readable by anyone.
-- The Innovation Dashboard access code lives in `src/App.tsx` (`ACCESS_CODE`). Change it
-  before deploying. It is a convenience gate, not security — real auth arrives with the backend.
+| Variable | Value | Why |
+|---|---|---|
+| `ADMIN_TOKEN` | a long random string — generate with `openssl rand -hex 24` | The Innovation Team's access token. Verified **server-side**; a wrong token cannot read a single record. Give it only to the Innovation Team and Founders. |
+| `ANTHROPIC_API_KEY` | your Anthropic key | Lets the server run the real interviewer and write reports. Participants never hold a key. |
+
+> **Never prefix either with `VITE_`.** Anything prefixed `VITE_` is compiled into the
+> public JavaScript bundle and readable by anyone who visits the site.
+
+**If `ANTHROPIC_API_KEY` is missing** the pilot still runs end to end, but every
+participant gets the built-in offline interviewer and an offline report instead of
+Claude. Check `Settings → Connected` and one test interview before sending invitations.
+
+**Netlify Blobs** (the pilot's datastore) needs no configuration — it is provisioned
+automatically for the site.
 
 ## 6. How to deploy
 
@@ -95,10 +107,14 @@ renews it forever. Under **Domain management → HTTPS**, enable **Force HTTPS**
 | Build fails: "vite: not found" or wrong Node | Set **Base directory** correctly (step 2.3) so `package.json` is found; if Node version issues appear, add `NODE_VERSION=20` under Environment variables. |
 | Site loads but fonts look wrong | Google Fonts are loaded from the internet — corporate networks that block `fonts.googleapis.com` will fall back to system fonts. Cosmetic only. |
 | Invite link shows "isn't valid" | The link was truncated in WhatsApp/email — tokens are exactly 12 characters after `#invite/`. Regenerate and share the full URL. |
-| "Disabled" links still open on participant phones | Expected today: revocation state lives in the Innovation Team's browser until a backend exists (see `src/invites.ts`). Treat links as private. |
-| Live AI doesn't respond on participant devices | The Claude API key lives per-browser (Settings). Participant devices without it automatically use the built-in interviewer — by design. |
+| Dashboard says "Server unreachable" / login says "Could not reach the server" | The functions did not deploy. Check **Deploys → Functions** lists `api` and `analysis-background`, and that **Base directory** is set so `netlify/functions` is found. |
+| Login rejects the right token | `ADMIN_TOKEN` is unset or differs on the site. Set it under Environment variables and redeploy. |
+| Interviews complete but reports read as generic | `ANTHROPIC_API_KEY` is missing, so the offline analyst wrote them. Set the key and re-interview. |
+| Invite says "already completed" unexpectedly | An invitation is single-use by design. Regenerate a link for that person. |
+| A participant's report never arrives | The background function failed. The transcript is still stored — check **Functions → analysis-background** logs; the person's interview will show `analysis_failed` with a reason. |
 | Deployed an old version | Check **Deploys** for the latest build; clear the browser cache or hard-reload (the HTML is no-cached by Netlify, assets are fingerprinted). |
 | Blank page after deploy | Almost always a mis-set publish directory — must be `dist` relative to the base directory. |
+| `/api/*` returns the HTML page | The SPA fallback is shadowing the API. Keep the `/api/*` function ahead of the `/*` → `/index.html` redirect in `netlify.toml`. |
 
 ---
 

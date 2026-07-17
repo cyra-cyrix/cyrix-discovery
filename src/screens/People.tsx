@@ -23,6 +23,7 @@ export function PeopleScreen({ onOpenPerson }: { onOpenPerson: (personId: string
   const [adding, setAdding] = useState(false)
   const [copiedToken, setCopiedToken] = useState<string | null>(null)
   const [query, setQuery] = useState('')
+  const [writeError, setWriteError] = useState<string | null>(null)
 
   const roster = useMemo(() => {
     const list = Object.values(people).sort((a, b) => a.createdAt - b.createdAt)
@@ -43,18 +44,30 @@ export function PeopleScreen({ onOpenPerson }: { onOpenPerson: (personId: string
     }
   }
 
-  function generate(personId: string) {
-    const previous = latestInviteFor(personId, invites)
-    if (previous && previous.status === 'active') upsertInvite({ ...previous, status: 'disabled' })
-    const invite: Invite = {
-      token: generateInviteToken(),
-      personId,
-      createdAt: Date.now(),
-      status: 'active',
-      completedAt: null,
+  async function generate(personId: string) {
+    setWriteError(null)
+    try {
+      const previous = latestInviteFor(personId, invites)
+      if (previous && previous.status === 'active') await upsertInvite({ ...previous, status: 'disabled' })
+      const invite: Invite = {
+        token: generateInviteToken(),
+        personId,
+        createdAt: Date.now(),
+        status: 'active',
+        completedAt: null,
+      }
+      await upsertInvite(invite)
+      void copy(invite.token)
+    } catch (e) {
+      setWriteError(e instanceof Error ? e.message : 'Could not save the invitation.')
     }
-    upsertInvite(invite)
-    void copy(invite.token)
+  }
+
+  async function guard(fn: () => Promise<void>) {
+    setWriteError(null)
+    try { await fn() } catch (e) {
+      setWriteError(e instanceof Error ? e.message : 'Could not save. Check your connection and try again.')
+    }
   }
 
   const interviewedCount = Object.values(interviews).filter((i) => i.status === 'complete').length
@@ -80,11 +93,17 @@ export function PeopleScreen({ onOpenPerson }: { onOpenPerson: (personId: string
         </p>
       </header>
 
+      {writeError && (
+        <div className="mt-6 border border-hairline border-error bg-neutral-050 px-4 py-2 text-label text-error" role="alert">
+          {writeError}
+        </div>
+      )}
+
       {(adding || editing) && (
         <PersonForm
           person={editing}
           onCancel={() => { setAdding(false); setEditing(null) }}
-          onSave={(p) => { upsertPerson(p); setAdding(false); setEditing(null) }}
+          onSave={(p) => { void guard(async () => { await upsertPerson(p); setAdding(false); setEditing(null) }) }}
         />
       )}
 
@@ -166,18 +185,18 @@ export function PeopleScreen({ onOpenPerson }: { onOpenPerson: (personId: string
                           <button onClick={() => void copy(activeInvite.token)} className="btn-secondary !px-4 !py-2 text-label">
                             {copiedToken === activeInvite.token ? 'Copied ✓' : 'Copy link'}
                           </button>
-                          <button onClick={() => generate(p.id)} className="btn-secondary !px-4 !py-2 text-label">
+                          <button onClick={() => void generate(p.id)} className="btn-secondary !px-4 !py-2 text-label">
                             Regenerate
                           </button>
                           <button
-                            onClick={() => upsertInvite({ ...activeInvite, status: 'disabled' })}
+                            onClick={() => void guard(async () => { await upsertInvite({ ...activeInvite, status: 'disabled' }) })}
                             className="btn-secondary !px-4 !py-2 text-label hover:!border-error hover:!text-error"
                           >
                             Disable
                           </button>
                         </>
                       ) : (
-                        <button onClick={() => generate(p.id)} className="btn-primary !px-4 !py-2 text-label">
+                        <button onClick={() => void generate(p.id)} className="btn-primary !px-4 !py-2 text-label">
                           {invite ? 'Generate new link' : 'Generate invite link'}
                         </button>
                       )}
@@ -188,7 +207,7 @@ export function PeopleScreen({ onOpenPerson }: { onOpenPerson: (personId: string
                         Edit
                       </button>
                       <button
-                        onClick={() => { if (confirm(`Remove ${p.name}? Any completed interview is archived, not deleted.`)) removePerson(p.id) }}
+                        onClick={() => { if (confirm(`Remove ${p.name}? This deletes their interview from shared storage.`)) void guard(async () => { await removePerson(p.id) }) }}
                         className="p-2 text-neutral-500 transition-colors hover:text-error"
                         aria-label={`Remove ${p.name}`}
                         title="Remove person"

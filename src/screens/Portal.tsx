@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { archiveInterview, useStore } from '../store'
+import { useStore } from '../store'
 import type { ChatMessage, Interview, ParticipantContext, Person } from '../types'
 import { newInterview, newPersonId } from '../types'
-import { discoveredDepartments, personFromContext } from '../org'
-import { liveAnalysis, liveOpening, liveTurn } from '../engine/claude'
-import { detectSystems, inferDepartmentName, simulatedAnalysis, simulatedOpening, simulatedTurn } from '../engine/simulated'
-import { lookupDecision } from '../invites'
+import { personFromContext } from '../org'
+import { liveOpening, liveTurn } from '../engine/claude'
+import { detectSystems, inferDepartmentName, simulatedOpening, simulatedTurn } from '../engine/simulated'
+import * as api from '../api'
 import { InitiativeLabel, ModuleLabel, ProgressRule, WorkingRule, Wordmark, coverageDepth } from '../components/ui'
 import { cyra } from '../tokens'
 
@@ -39,38 +39,46 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
   onExit?: () => void
 }) {
   const store = useStore()
-  const live = Boolean(store.settings.apiKey)
-
-  // The invitation identifies the PERSON. Their department is never taken from
-  // the URL — it is discovered in the conversation.
-  const invitedPersonId = inviteToken ? store.invites[inviteToken]?.personId ?? null : null
 
   const [step, setStep] = useState<Step>('welcome')
-  const [personId, setPersonId] = useState<string | null>(presetPersonId ?? invitedPersonId)
+  const [personId, setPersonId] = useState<string | null>(presetPersonId)
   const [voiceMode, setVoiceMode] = useState(false)
   const [stage, setStage] = useState('Reading the conversation')
   const [error, setError] = useState<string | null>(null)
 
-  const interview = personId ? store.interviews[personId] : undefined
-  const knownPerson = personId ? store.people[personId] : undefined
-
-  // Invitation gate (participant path only). Validation lives in invites.ts —
-  // the backend seam — so this component never needs to change. Decided once
-  // at entry: completing the interview must not flip the session into the
-  // "already completed" notice before the thank-you screen.
-  const [decision] = useState(() =>
-    !internal && inviteToken !== null ? lookupDecision(inviteToken, store.invites) : 'accept',
+  // The invitation is resolved against SHARED storage, so the link works on a
+  // device that has never seen the roster. This is the whole point of the
+  // pilot backend; `decision` is settled once, at entry, so completing the
+  // interview cannot flip the session into "already completed" mid-flow.
+  const [decision, setDecision] = useState<api.InviteDecision | 'loading'>(
+    internal || inviteToken === null ? 'accept' : 'loading',
   )
-  if (decision !== 'accept') {
-    return <InviteNotice decision={decision} />
-  }
+  const [invitedPerson, setInvitedPerson] = useState<Person | null>(null)
 
-  // Resume: a reload mid-conversation finds the in-progress interview by token.
-  const resumable = !internal && inviteToken
-    ? Object.values(store.interviews).find((i) => i.inviteToken === inviteToken && i.status === 'in_progress' && i.participant)
-    : presetPersonId && interview?.status === 'in_progress' && interview.participant
-      ? interview
-      : undefined
+  useEffect(() => {
+    if (internal || !inviteToken) return
+    let cancelled = false
+    void api.resolveInvite(inviteToken)
+      .then((r) => {
+        if (cancelled) return
+        setDecision(r.decision)
+        if (r.person) { setInvitedPerson(r.person); setPersonId(r.person.id) }
+      })
+      .catch(() => { if (!cancelled) setDecision('unreachable' as api.InviteDecision) })
+    return () => { cancelled = true }
+  }, [inviteToken, internal])
+
+  const interview = personId ? store.interviews[personId] : undefined
+  const knownPerson = invitedPerson ?? (personId ? store.people[personId] : undefined)
+
+  if (decision === 'loading') return <PortalLoading />
+  if (decision !== 'accept') return <InviteNotice decision={decision} />
+
+  // Resume only applies to the internal test-run: a participant's conversation
+  // lives in this browser's memory until they submit it.
+  const resumable = presetPersonId && interview?.status === 'in_progress' && interview.participant
+    ? interview
+    : undefined
 
   // ---------- flow transitions ----------
 
@@ -78,44 +86,34 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
     setVoiceMode(useVoice)
     setError(null)
 
-    // Resolve the person: the invited record, or a new one created from what
-    // they just told us (a participant may arrive without a roster entry).
+    // The invited person, or a new record built from what they just told us
+    // (a participant may arrive without a roster entry). Either way the record
+    // is persisted centrally when they submit.
     const id = personId ?? newPersonId()
-    if (!store.people[id]) {
-      store.upsertPerson(personFromContext(id, ctx))
-    } else if (ctx.department.trim() && !store.people[id].department) {
-      store.upsertPerson({ ...store.people[id], department: ctx.department.trim() })
-    }
+    const person = knownPerson ?? personFromContext(id, ctx)
     setPersonId(id)
+    setInvitedPerson(ctx.department.trim() && !person.department
+      ? { ...person, department: ctx.department.trim() }
+      : person)
 
-    const existing = store.interviews[id]
-    if (existing && existing.status !== 'not_started') archiveInterview(existing)
-
-    const mode = live ? 'live' : 'simulated'
-    const iv = newInterview(id, mode, ctx, internal ? null : inviteToken)
-    store.setInterview(id, iv)
+    const iv = newInterview(id, 'live', ctx, internal ? null : inviteToken)
+    void store.setInterview(id, iv)
     setStep('conversation')
 
-    if (mode === 'simulated') {
-      store.updateInterview(id, (p) => ({
+    try {
+      const opening = await liveOpening(store.settings.model, store.interviews, id, ctx, inviteToken)
+      void store.updateInterview(id, (p) => ({
         ...p,
+        messages: [{ id: nextId(), role: 'ai', text: opening }],
+      }))
+    } catch {
+      // The conversation must never dead-end for a participant: if the server
+      // cannot reach Claude, the offline interviewer takes over silently.
+      void store.updateInterview(id, (p) => ({
+        ...p,
+        mode: 'simulated',
         messages: [{ id: nextId(), role: 'ai', text: simulatedOpening(ctx) }],
       }))
-    } else {
-      try {
-        const opening = await liveOpening(store.settings.apiKey, store.settings.model, store.interviews, id, ctx)
-        store.updateInterview(id, (p) => ({
-          ...p,
-          messages: [{ id: nextId(), role: 'ai', text: opening }],
-        }))
-      } catch {
-        // fall back silently — the conversation must never dead-end for a participant
-        store.updateInterview(id, (p) => ({
-          ...p,
-          mode: 'simulated',
-          messages: [{ id: nextId(), role: 'ai', text: simulatedOpening(ctx) }],
-        }))
-      }
     }
   }
 
@@ -123,38 +121,31 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
     if (!interview || !personId) return
     setStep('generating')
     setError(null)
-    store.updateInterview(personId, (p) => ({ ...p, status: 'generating' }))
+    setStage('Sending your conversation')
     try {
-      const current = { ...interview, status: 'generating' as const }
-      const knownNames = discoveredDepartments(store.interviews).map((d) => d.name)
-      const analysis = interview.mode === 'live'
-        ? await liveAnalysis(store.settings.apiKey, store.settings.model, current, setStage)
-        : simulatedAnalysis(current, knownNames)
-      store.updateInterview(personId, (p) => ({
-        ...p,
-        status: 'complete',
-        completedAt: Date.now(),
-        departmentName: analysis.departmentName,
-        profile: analysis.profile,
-        report: analysis.report,
-        opportunities: analysis.opportunities,
-        edges: analysis.edges,
-      }))
-      // Record the discovered department back onto the person record.
-      const person = store.people[personId]
-      if (person && analysis.departmentName) {
-        store.upsertPerson({ ...person, department: analysis.departmentName })
+      // Hand the transcript to shared storage. The report is written by a
+      // background function server-side, so it survives this browser closing.
+      await api.submitInterview(inviteToken ?? '', interview, knownPerson ?? null)
+      setStage('Writing the discovery report')
+
+      // Poll our own submission until the server says the report has landed.
+      const token = inviteToken ?? ''
+      for (let i = 0; i < 120; i++) {
+        await new Promise((r) => setTimeout(r, 3000))
+        const { status } = await api.pollInterviewStatus(token)
+        if (status === 'complete') {
+          if (internal && onFinished) { void store.refresh(); onFinished(personId); return }
+          setStep('done'); return
+        }
+        if (status === 'analysis_failed') {
+          throw new Error('The report could not be written. Your answers are saved — the Innovation Team can retry.')
+        }
       }
-      // Close out the invitation this conversation was started from.
-      if (inviteToken) {
-        const invite = store.invites[inviteToken]
-        if (invite) store.upsertInvite({ ...invite, completedAt: Date.now() })
-      }
-      if (internal && onFinished) onFinished(personId)
-      else setStep('done')
+      // Timed out waiting, but the work is server-side and the answers are
+      // stored: say so honestly rather than implying the interview was lost.
+      setStep('done')
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Something went wrong. Please try submitting again.')
-      store.updateInterview(personId, (p) => ({ ...p, status: 'in_progress' }))
+      setError(e instanceof Error ? e.message : 'Something went wrong. Your answers are still here — try submitting again.')
       setStep('summary')
     }
   }
@@ -209,7 +200,7 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
           interview={interview}
           error={error}
           onAddition={(text) => {
-            store.updateInterview(personId, (p) => ({
+            void store.updateInterview(personId, (p) => ({
               ...p,
               messages: [...p.messages, { id: nextId(), role: 'user', text: `(Correction / addition to the summary) ${text}` }],
               facts: [...p.facts, { dimension: 'flow', text }],
@@ -255,8 +246,25 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
 
 // ---------- Invitation notices ----------
 
-function InviteNotice({ decision }: { decision: 'invalid' | 'disabled' | 'completed' }) {
-  const copy = {
+function PortalLoading() {
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center bg-neutral-050 px-6">
+      <Wordmark />
+      <div className="mt-6 w-40"><WorkingRule stage="Checking your invitation" /></div>
+    </div>
+  )
+}
+
+function InviteNotice({ decision }: { decision: string }) {
+  const copy = ({
+    unknown: {
+      title: 'This invitation link isn\'t valid.',
+      body: 'The link may have been mistyped or truncated. Please open it exactly as you received it, or ask the Cyrix Innovation Team to send a fresh one.',
+    },
+    unreachable: {
+      title: 'We can\'t reach the server right now.',
+      body: 'Your invitation is fine — this is on our side. Please try the link again in a few minutes.',
+    },
     invalid: {
       title: 'This invitation link isn\'t valid.',
       body: 'The link may have been mistyped or truncated. Please open it exactly as you received it, or ask the Cyrix Innovation Team to send a fresh one.',
@@ -269,7 +277,10 @@ function InviteNotice({ decision }: { decision: 'invalid' | 'disabled' | 'comple
       title: 'This invitation has already been completed.',
       body: 'Thank you — your conversation is already part of how Cyrix understands itself. If you\'d like to add more, the Innovation Team can send a fresh invitation.',
     },
-  }[decision]
+  } as Record<string, { title: string; body: string }>)[decision] ?? {
+    title: 'This invitation link isn\'t valid.',
+    body: 'Please ask the Cyrix Innovation Team for a fresh invitation.',
+  }
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-neutral-050 px-6 text-center">
       <Wordmark />
@@ -548,13 +559,13 @@ function Conversation({ interview, personId, voiceMode, onVoiceModeChange, onWra
 
     const userMsg: ChatMessage = { id: nextId(), role: 'user', text }
     const withUser: Interview = { ...interview, messages: [...interview.messages, userMsg] }
-    store.setInterview(personId, withUser)
+    void store.setInterview(personId, withUser)
     setThinking(true)
 
     try {
       if (interview.mode === 'live') {
-        const result = await liveTurn(store.settings.apiKey, store.settings.model, store.interviews, personId, withUser.messages, interview.participant)
-        store.updateInterview(personId, (p) => ({
+        const result = await liveTurn(store.settings.model, store.interviews, personId, withUser.messages, interview.participant, interview.inviteToken)
+        void store.updateInterview(personId, (p) => ({
           ...p,
           messages: [...p.messages, { id: nextId(), role: 'ai', text: result.reply }],
           facts: [...p.facts, ...result.facts],
@@ -563,7 +574,7 @@ function Conversation({ interview, personId, voiceMode, onVoiceModeChange, onWra
       } else {
         const result = simulatedTurn(withUser, text)
         await new Promise((r) => setTimeout(r, 700 + Math.random() * 600))
-        store.updateInterview(personId, (p) => ({
+        void store.updateInterview(personId, (p) => ({
           ...p,
           messages: [...p.messages, { id: nextId(), role: 'ai', text: result.reply }],
           facts: [...p.facts, ...result.facts],
