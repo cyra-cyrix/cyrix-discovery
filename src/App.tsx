@@ -1,13 +1,12 @@
 import { useState } from 'react'
 import { StoreProvider, useStore } from './store'
-import { Home } from './screens/Home'
+import { PeopleScreen } from './screens/People'
 import { Portal } from './screens/Portal'
 import { ReportScreen } from './screens/Report'
 import { Dashboard } from './screens/Dashboard'
 import { GraphScreen } from './screens/Graph'
-import { InvitesScreen } from './screens/Invites'
 import { SettingsModal } from './screens/Settings'
-import { Wordmark } from './components/ui'
+import { InitiativeLabel, ModuleLabel, Wordmark } from './components/ui'
 
 // ---------------------------------------------------------------------------
 // Two experiences, split by URL:
@@ -21,7 +20,7 @@ import { Wordmark } from './components/ui'
 const ACCESS_KEY = 'cyrix-innovation-access'
 const ACCESS_CODE = 'cyrix2026' // front-end gate for the internal deployment; move behind real auth with the first backend
 
-type Tab = 'home' | 'dashboard' | 'graph' | 'invites'
+type Tab = 'dashboard' | 'people' | 'graph'
 
 type Route =
   | { kind: 'portal'; inviteToken: string }
@@ -30,10 +29,10 @@ type Route =
 
 function parseRoute(): Route {
   const h = window.location.hash.replace(/^#/, '')
-  if (h === 'innovation' || h === 'innovation/home') return { kind: 'innovation', tab: 'home' }
-  if (h === 'innovation/dashboard') return { kind: 'innovation', tab: 'dashboard' }
+  // Dashboard is the landing page after admin login.
+  if (h === 'innovation' || h === 'innovation/dashboard') return { kind: 'innovation', tab: 'dashboard' }
+  if (h === 'innovation/people') return { kind: 'innovation', tab: 'people' }
   if (h === 'innovation/graph') return { kind: 'innovation', tab: 'graph' }
-  if (h === 'innovation/invites') return { kind: 'innovation', tab: 'invites' }
   if (h.startsWith('invite/')) return { kind: 'portal', inviteToken: h.slice('invite/'.length) }
   return { kind: 'landing' }
 }
@@ -51,10 +50,11 @@ export default function App() {
 
 function InviteRequired() {
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-porcelain-100 px-6 text-center">
+    <div className="flex min-h-screen flex-col items-center justify-center bg-neutral-050 px-6 text-center">
       <Wordmark />
-      <h1 className="mt-6 font-display text-2xl font-bold text-carbon">This conversation is by invitation.</h1>
-      <p className="mt-3 max-w-sm text-sm leading-relaxed text-slate">
+      <div className="mt-2"><InitiativeLabel /></div>
+      <h1 className="mt-6 font-display text-display2 font-heavy text-ink">This conversation is by invitation.</h1>
+      <p className="mt-4 max-w-sm text-bodySmall text-neutral-700">
         Please use the personal invitation link you received. If you don't have one, the Cyrix Innovation Team
         will be happy to send it.
       </p>
@@ -76,13 +76,14 @@ function AccessGate({ onGranted }: { onGranted: () => void }) {
   const [code, setCode] = useState('')
   const [wrong, setWrong] = useState(false)
   return (
-    <div className="flex min-h-screen items-center justify-center bg-porcelain-100 px-6">
+    <div className="flex min-h-screen items-center justify-center bg-neutral-050 px-6">
       <div className="card w-full max-w-sm p-6">
         <Wordmark />
-        <h1 className="mt-5 font-display text-lg font-bold text-carbon">Innovation Dashboard</h1>
-        <p className="mt-1 text-sm text-slate">Restricted to the Innovation Team and Founders.</p>
+        <div className="mt-2"><InitiativeLabel /></div>
+        <h1 className="mt-6 font-display text-heading font-heavy text-ink">Innovation Dashboard</h1>
+        <p className="mt-2 text-bodySmall text-neutral-700">Restricted to the Innovation Team and Founders.</p>
         <form
-          className="mt-5"
+          className="mt-6"
           onSubmit={(e) => {
             e.preventDefault()
             if (code === ACCESS_CODE) onGranted()
@@ -94,10 +95,10 @@ function AccessGate({ onGranted }: { onGranted: () => void }) {
             value={code}
             onChange={(e) => { setCode(e.target.value); setWrong(false) }}
             placeholder="Access code"
-            className="input font-mono"
+            className="input font-sans"
             autoFocus
           />
-          {wrong && <p className="mt-2 text-xs text-signal-600">That code isn't right.</p>}
+          {wrong && <p className="mt-2 text-label text-error">That code isn't right.</p>}
           <button type="submit" className="btn-primary mt-4 w-full">Enter</button>
         </form>
       </div>
@@ -109,78 +110,69 @@ function AccessGate({ onGranted }: { onGranted: () => void }) {
 
 interface View {
   tab: Tab
-  deptId: string | null // when set, we're inside a department (conversation or report)
+  personId: string | null // when set, we're inside a person's interview or report
 }
 
 function InnovationShell({ initialTab }: { initialTab: Tab }) {
-  const { interviews, updateInterview } = useStore()
-  const [view, setView] = useState<View>({ tab: initialTab, deptId: null })
+  const { interviews, resetInterview } = useStore()
+  const [view, setView] = useState<View>({ tab: initialTab, personId: null })
   const [showSettings, setShowSettings] = useState(false)
 
   const goTab = (tab: Tab) => {
-    window.location.hash = tab === 'home' ? 'innovation' : `innovation/${tab}`
-    setView({ tab, deptId: null })
+    window.location.hash = tab === 'dashboard' ? 'innovation' : `innovation/${tab}`
+    setView({ tab, personId: null })
   }
-  const openDept = (deptId: string) => setView((v) => ({ ...v, deptId }))
-  const closeDept = () => setView((v) => ({ ...v, deptId: null }))
-
-  const restartInterview = (deptId: string) => {
-    updateInterview(deptId, (p) => ({
-      ...p,
-      status: 'not_started',
-      messages: [],
-      facts: [],
-    }))
-  }
+  const openPerson = (personId: string) => setView((v) => ({ ...v, personId }))
+  const closePerson = () => setView((v) => ({ ...v, personId: null }))
 
   let content
-  if (view.deptId) {
-    const deptId = view.deptId
-    const iv = interviews[deptId]
+  if (view.personId) {
+    const personId = view.personId
+    const iv = interviews[personId]
     if (iv?.status === 'complete') {
       content = (
         <ReportScreen
-          deptId={deptId}
-          onExit={closeDept}
-          onRestart={() => restartInterview(deptId)}
+          personId={personId}
+          onExit={closePerson}
+          onRestart={() => { resetInterview(personId); closePerson() }}
         />
       )
     } else {
       // Internal test-run of the participant experience, inside the shell
       content = (
         <Portal
-          presetDeptId={deptId}
+          presetPersonId={personId}
           internal
-          onExit={closeDept}
+          onExit={closePerson}
           onFinished={() => { /* status flips to complete; this view now renders the report */ }}
         />
       )
     }
-  } else if (view.tab === 'dashboard') {
-    content = <Dashboard onOpenDept={openDept} />
+  } else if (view.tab === 'people') {
+    content = <PeopleScreen onOpenPerson={openPerson} />
   } else if (view.tab === 'graph') {
-    content = <GraphScreen onOpenDept={openDept} />
-  } else if (view.tab === 'invites') {
-    content = <InvitesScreen />
+    content = <GraphScreen onOpenPerson={openPerson} />
   } else {
-    content = <Home onOpenDept={openDept} />
+    content = <Dashboard onOpenPerson={openPerson} />
   }
 
   return (
     <div className="min-h-screen">
-      <nav className="sticky top-0 z-40 border-b border-porcelain-200 bg-porcelain-100/90 backdrop-blur" aria-label="Primary">
-        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-3 px-4 sm:px-6">
-          <button onClick={() => goTab('home')} className="shrink-0" aria-label="Innovation dashboard home">
-            <Wordmark />
-          </button>
-          <div className="flex items-center gap-1">
-            <TabButton active={view.tab === 'home' && !view.deptId} onClick={() => goTab('home')}>Departments</TabButton>
-            <TabButton active={view.tab === 'dashboard' && !view.deptId} onClick={() => goTab('dashboard')}>Dashboard</TabButton>
-            <TabButton active={view.tab === 'graph' && !view.deptId} onClick={() => goTab('graph')}>Graph</TabButton>
-            <TabButton active={view.tab === 'invites' && !view.deptId} onClick={() => goTab('invites')}>Invites</TabButton>
+      <nav className="sticky top-0 z-40 border-b border-neutral-150 bg-neutral-050/90 backdrop-blur" aria-label="Primary">
+        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
+          <div className="flex shrink-0 items-center gap-4">
+            <button onClick={() => goTab('dashboard')} aria-label="CYRA Discovery home">
+              <Wordmark />
+            </button>
+            <ModuleLabel>Discovery</ModuleLabel>
+          </div>
+          <div className="flex items-center gap-2">
+            <TabButton active={view.tab === 'dashboard' && !view.personId} onClick={() => goTab('dashboard')}>Dashboard</TabButton>
+            <TabButton active={view.tab === 'people' && !view.personId} onClick={() => goTab('people')}>People</TabButton>
+            <TabButton active={view.tab === 'graph' && !view.personId} onClick={() => goTab('graph')}>Graph</TabButton>
             <button
               onClick={() => setShowSettings(true)}
-              className="ml-1 rounded-lg p-2 text-slate transition-colors hover:bg-porcelain-200 hover:text-carbon"
+              className="ml-2 p-2 text-neutral-700 transition-colors hover:bg-neutral-150 hover:text-ink"
               aria-label="Settings"
             >
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -205,9 +197,9 @@ function TabButton({ active, onClick, children }: {
   return (
     <button
       onClick={onClick}
-      className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
-        active ? 'bg-white text-petrol-700 shadow-card' : 'text-slate hover:text-carbon'
-      }`}
+      className={` px-4 py-2 text-bodySmall font-medium transition-colors ${
+ active ? 'bg-paper text-ink ' : 'text-neutral-700 hover:text-ink'
+ }`}
       aria-current={active ? 'page' : undefined}
     >
       {children}

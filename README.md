@@ -22,8 +22,12 @@ npm run typecheck  # tsc --noEmit (the only real type check)
 
 | Who | URL | What they see |
 |---|---|---|
-| **Department Heads / Team Leaders** | a unique invitation link `…/#invite/<token>` (issued per person from the internal **Invites** tab; the token identifies the invitation only — the department is always asked in the form, never taken from the URL) | The **Discovery Conversation Portal** only: Welcome → basic context → AI conversation (voice or text, switchable mid-stream) → "What I understood" confirmation → Submit → Thank you. No navigation, no reports, no hint the rest exists. The bare URL without a token shows a polite "by invitation" notice. |
-| **Innovation Team / Founders** | `…/#innovation` | Everything: department grid, **Invitation Manager** (generate / copy / regenerate / disable links, completion dates), dashboard (founder briefs, priority matrix, portfolio, pain, risks, search), knowledge graph, full reports, settings. Gated by an access code (`ACCESS_CODE` in `src/App.tsx` — change it before deploying) — front-end-only gating; move behind real auth with the first backend. |
+| **Participants** (department heads, team leaders) | a unique invitation link `…/#invite/<token>`, issued **per person** from the internal **People** page | The **Discovery Conversation Portal** only: Welcome → basic context → AI conversation (voice or text, switchable mid-stream) → "What I understood" confirmation → Submit → Thank you. No navigation, no reports, no hint the rest exists. The bare URL without a token shows a polite "by invitation" notice. |
+| **Innovation Team / Founders** | `…/#innovation` | **Dashboard** (the landing page — founder briefs, priority matrix, portfolio, pain, risks, search), **People** (roster + invitations), **Graph** (the emergent knowledge graph), full reports, settings. Gated by an access code (`ACCESS_CODE` in `src/App.tsx` — change it before deploying) — front-end-only gating; move behind real auth with the first backend. |
+
+### People-first: the organization is discovered, not declared
+
+**PERSON is the primary entity.** There is no predefined department list. Each person record holds name, designation, email, phone, state, optional reporting manager, optional department, and interview status; invitations are issued to that person. The **department is discovered by the interview** — participants may leave it blank, and the analysis names the team in the organization's own vocabulary, then back-fills it onto the person record. **Relationships between teams emerge the same way**: the knowledge graph starts empty and draws a node only when a conversation reveals a team, and an edge only when a conversation evidences a dependency (`src/org.ts` derives all of this from completed interviews).
 
 **Invitation tokens** are self-validating (11 random base36 chars + checksum) so participant devices can reject malformed links without a backend; all validation logic is isolated in `src/invites.ts` — the single seam a future backend replaces (`lookupDecision` → API call). Until then, disable/completed state is enforced on the device holding the invite records. Deployment: see **DEPLOY_NETLIFY.md** (config in `netlify.toml`).
 
@@ -59,7 +63,9 @@ Front-end only (Vite + React 18 + TS + Tailwind 3), state persisted in localStor
 - `src/engine/prompts.ts` — the consultant system prompt, per-turn JSON schema, report schema
 - `src/engine/claude.ts` — Claude API calls (structured outputs; streaming for the long report)
 - `src/engine/simulated.ts` — offline adaptive interviewer + offline analysis synthesis
-- `src/store.tsx` — localStorage-backed store (starts empty; replaced interviews are archived)
-- `src/screens/` — Home, Interview (conversation + understanding rail), Report, Dashboard, Graph, Settings
+- `src/org.ts` — the emergent organization: departments, relationships and person status all derived from completed interviews
+- `src/invites.ts` — invitation tokens (the backend seam)
+- `src/store.tsx` — localStorage-backed store: `people` · `interviews` (keyed by person) · `invites` (starts empty; replaced interviews are archived)
+- `src/screens/` — Portal (participant), Dashboard, People, Graph, Report, Settings
 - The **pulse trace** (ECG line, one beat per discovery dimension) is the product's signature:
   amplitude grows as the ten discovery objectives are understood.

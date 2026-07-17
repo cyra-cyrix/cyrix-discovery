@@ -1,7 +1,7 @@
 // ---------- Discovery dimensions (the 10 interview objectives) ----------
 
 export type DimensionKey =
-  | 'value' // how the department creates value
+  | 'value' // how the team creates value
   | 'flow' // how work actually flows
   | 'time' // where people spend time
   | 'knowledge' // where knowledge exists
@@ -19,7 +19,7 @@ export interface Dimension {
 }
 
 export const DIMENSIONS: Dimension[] = [
-  { key: 'value', label: 'How this department creates value', short: 'Value' },
+  { key: 'value', label: 'How this team creates value', short: 'Value' },
   { key: 'flow', label: 'How work actually flows', short: 'Workflow' },
   { key: 'time', label: 'Where people spend time', short: 'Time' },
   { key: 'knowledge', label: 'Where knowledge exists', short: 'Knowledge' },
@@ -30,6 +30,38 @@ export const DIMENSIONS: Dimension[] = [
   { key: 'aiOpportunity', label: 'Where AI can help', short: 'AI openings' },
   { key: 'impact', label: 'What measurable impact is possible', short: 'Impact' },
 ]
+
+// ---------- People (the primary entity) ----------
+// The organization is discovered, not predefined: people are invited, and
+// departments/relationships emerge from what their interviews reveal.
+
+export interface Person {
+  id: string
+  name: string
+  designation: string
+  email: string
+  phone: string
+  state: string
+  reportingManager: string // optional, free text
+  department: string // optional — usually discovered by the interview
+  createdAt: number
+}
+
+export const newPersonId = (): string => `per-${Date.now().toString(36)}-${Math.floor(Math.random() * 36 ** 4).toString(36)}`
+
+export type PersonStatus = 'complete' | 'in_progress' | 'invited' | 'not_invited'
+
+// ---------- Invitations (issued to a person) ----------
+
+export type InviteStatus = 'active' | 'disabled'
+
+export interface Invite {
+  token: string
+  personId: string
+  createdAt: number
+  status: InviteStatus
+  completedAt: number | null
+}
 
 // ---------- Conversation ----------
 
@@ -62,7 +94,7 @@ export type Horizon = 'quick' | 'medium' | 'strategic'
 
 export interface Opportunity {
   id: string
-  departmentId: string
+  personId: string // the interview this opportunity emerged from
   title: string
   type: OpportunityType
   problem: string
@@ -132,40 +164,31 @@ export interface Report {
   founderBrief: string
 }
 
+/** An emergent relationship between discovered departments/teams (free-text names). */
 export interface GraphEdge {
-  from: string // department id
-  to: string // department id
+  from: string
+  to: string
   label: string
 }
 
-// ---------- Participant ----------
+// ---------- Participant context (collected at interview start) ----------
 
 export interface ParticipantContext {
   name: string // optional — may be ''
   designation: string
+  department: string // optional free text — discovered in conversation if blank
   stateBranch: string
   yearsAtCyrix: string
   responsibility: string // primary responsibility in 1–2 sentences
 }
 
-// ---------- Invitations ----------
-
-export type InviteStatus = 'active' | 'disabled'
-
-export interface Invite {
-  token: string
-  departmentId: string // the department this invitation was issued for (informational — the form still asks)
-  createdAt: number
-  status: InviteStatus
-  completedAt: number | null
-}
-
-// ---------- Interview ----------
+// ---------- Interview (keyed by person) ----------
 
 export type InterviewStatus = 'not_started' | 'in_progress' | 'generating' | 'complete'
 
 export interface Interview {
-  departmentId: string
+  personId: string
+  departmentName: string | null // discovered — from context or the analysis
   status: InterviewStatus
   mode: 'live' | 'simulated'
   startedAt: number | null
@@ -182,12 +205,13 @@ export interface Interview {
 }
 
 export const newInterview = (
-  departmentId: string,
+  personId: string,
   mode: 'live' | 'simulated',
   participant: ParticipantContext | null = null,
   inviteToken: string | null = null,
 ): Interview => ({
-  departmentId,
+  personId,
+  departmentName: participant?.department.trim() || null,
   status: 'in_progress',
   mode,
   startedAt: Date.now(),
@@ -202,16 +226,6 @@ export const newInterview = (
   opportunities: [],
   edges: [],
 })
-
-// ---------- Departments ----------
-
-export interface Department {
-  id: string
-  name: string
-  short: string
-  blurb: string
-  headRole: string
-}
 
 // ---------- Settings ----------
 

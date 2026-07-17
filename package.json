@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "tokens": "node scripts/build-tokens.mjs",
+    "predev": "npm run tokens",
     "dev": "vite --port 5174",
+    "prebuild": "npm run tokens",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"

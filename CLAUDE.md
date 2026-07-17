@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-**Cyrix Discovery** — an AI-powered Organizational Discovery Platform for Cyrix Healthcare (India's largest biomedical equipment service org, ~1200 engineers, 14 departments). An AI interviewer holds a ~20-minute consultant-grade conversation with each department head, builds a knowledge model across **10 discovery dimensions** (`DIMENSIONS` in `src/types.ts` — value, flow, time, knowledge, knowledgeLoss, decisions, delays, manual, aiOpportunity, impact), then derives a 12-section discovery report, a classified AI-opportunity portfolio, a founder brief, and edges for a company-wide knowledge graph.
+**CYRA Discovery** — the Discovery module of the CYRA platform: an AI-powered Organizational Discovery Platform for Cyrix Healthcare (India's largest biomedical equipment service org, ~1200 engineers). An AI interviewer holds a ~20-minute consultant-grade conversation with each participant, builds a knowledge model across **10 discovery dimensions** (`DIMENSIONS` in `src/types.ts` — value, flow, time, knowledge, knowledgeLoss, decisions, delays, manual, aiOpportunity, impact), then derives a 12-section discovery report, a classified AI-opportunity portfolio, a founder brief, and edges for a company-wide knowledge graph.
+
+**PERSON is the primary entity — the organization is discovered, never predefined.** This is the load-bearing architectural rule: there is no department roster anywhere in the codebase (a predefined `data/departments.ts` was deliberately deleted). Invitations are issued to *people*; the department is a free-text field the participant may leave blank and the interview discovers (`departmentName` on `Interview`, written by the analysis); departments and their relationships are *derived* from completed interviews via `src/org.ts` (`discoveredDepartments`, `interviewDeptLabel`, `personStatus`). Never reintroduce a hardcoded department list, and never take a department from a URL.
 
 Product stance (from the deployment brief, holds for all changes): **not a survey, not a chatbot**. Understanding first — AI opportunities must emerge from interview evidence, never from pitching. Trust, low friction and insight quality beat feature count. Refine; don't redesign.
 
@@ -14,10 +16,10 @@ Product stance (from the deployment brief, holds for all changes): **not a surve
 
 Routing is parsed **once at module load** in `src/App.tsx` (`parseRoute()`); there is no router library.
 
-- **`#invite/<token>`** → **Discovery Conversation Portal** (`src/screens/Portal.tsx`) — the only surface participants ever see. The token identifies the *invitation*, never the department (**the form always asks the department; never derive it from the URL**). Tokens are self-validating (11 base36 chars + checksum); ALL validation lives in `src/invites.ts` (`lookupDecision`) — the single seam a future backend replaces. Flow: Welcome → Basic context → Conversation (voice or text, switchable mid-stream) → "What I understood" confirmation → Submit → Thank you. **No navigation, no settings, no reports, no hint that anything else exists.** Participants never see the generated report. The bare URL shows an invitation-required notice.
-- **`#innovation`, `#innovation/{dashboard,graph,invites}`** → **Innovation Dashboard** — everything else (department grid, Invitation Manager, dashboard, knowledge graph, reports, settings). Gated by a front-end access code (`ACCESS_CODE` in `App.tsx`, flag persisted in localStorage under `cyrix-innovation-access`). This is demo-grade gating — move behind real auth when a backend exists.
+- **`#invite/<token>`** → **Discovery Conversation Portal** (`src/screens/Portal.tsx`) — the only surface participants ever see. The token identifies the *person invited*; their department is asked as optional free text and discovered by the interview. Tokens are self-validating (11 base36 chars + checksum); ALL validation lives in `src/invites.ts` (`lookupDecision`) — the single seam a future backend replaces. Flow: Welcome → Basic context → Conversation (voice or text, switchable mid-stream) → "What I understood" confirmation → Submit → Thank you. **No navigation, no settings, no reports, no hint that anything else exists.** Participants never see the generated report. The bare URL shows an invitation-required notice. A participant arriving without a roster record auto-creates one (`personFromContext`).
+- **`#innovation` (= Dashboard, the landing page), `#innovation/people`, `#innovation/graph`** → **Innovation Dashboard** — everything else. **People** (`screens/People.tsx`) is the roster + invitation manager in one (add/edit person: name, designation, email, phone, state, reporting manager, optional department; generate/copy/regenerate/disable their link; status; completion date). Gated by a front-end access code (`ACCESS_CODE` in `App.tsx`, flag persisted in localStorage under `cyrix-innovation-access`). This is demo-grade gating — move behind real auth when a backend exists.
 - **Deployment:** static Netlify site — `netlify.toml` + step-by-step `DEPLOY_NETLIFY.md`. No env vars; never put an API key in a `VITE_*` variable (it would be public).
-- Internally, clicking a not-complete department renders the *same* `Portal` component with `internal` + `presetDeptId` props (nav stays visible, completion shows the report). There is deliberately **one** conversation implementation — do not fork a second interview UI.
+- Internally, opening a not-yet-interviewed person renders the *same* `Portal` component with `internal` + `presetPersonId` props (nav stays visible; completion shows the report). There is deliberately **one** conversation implementation — do not fork a second interview UI.
 
 ## Two Engines, One Contract
 
@@ -26,21 +28,22 @@ Every interview runs on one of two interchangeable engines; both must keep produ
 - **Live** (`src/engine/claude.ts`): browser → Claude API directly (`dangerouslyAllowBrowser`; key from Settings, localStorage only). Per turn: one `messages.create` call with structured output (`output_config.format` json_schema, `TURN_SCHEMA`) returning `{reply, facts[], coverage}`. Final analysis: one **streaming** call (`REPORT_SCHEMA`) returning profile + report + opportunities + graph edges. Uses `claude-opus-4-8` by default (picker in Settings). Requires `@anthropic-ai/sdk` ≥ 0.111 — older versions don't type `output_config`.
 - **Simulated** (`src/engine/simulated.ts`): offline adaptive interviewer — regex **signal table** picks contextual follow-ups from the latest answer, else it probes the least-covered dimension; analysis is synthesized from collected facts. This is the no-API-key fallback and the guarantee the portal never dead-ends (live errors silently fall back to it mid-conversation).
 
-**When you change the analysis output shape, update all four in lockstep:** `src/types.ts` (Report/Opportunity/etc.), `REPORT_SCHEMA` + report prompt in `src/engine/prompts.ts`, the synthesis in `src/engine/simulated.ts`, and the seeded data in `src/data/seed.ts`. Missing one produces silent `undefined`s in the dashboard.
+**When you change the analysis output shape, update all three in lockstep:** `src/types.ts` (Report/Opportunity/etc.), `REPORT_SCHEMA` + report prompt in `src/engine/prompts.ts`, and the synthesis in `src/engine/simulated.ts`. Missing one produces silent `undefined`s in the dashboard. Both engines must return `AnalysisResult` including the discovered `departmentName`.
 
-Cross-interview memory: `priorFindingsFor()` (prompts.ts) feeds severe pain points from completed interviews into every later interview's system prompt; the Graph screen derives cross-department patterns from shared pain categories.
+Cross-interview memory: `priorFindingsFor()` (prompts.ts) feeds severe pain points from completed interviews into every later interview's system prompt; the Graph derives cross-team patterns from shared pain categories. Note the engines differ on edges by design: the live engine extracts any team the conversation names (including not-yet-interviewed ones, drawn as dashed "mentioned" nodes); the offline engine can only link to *already discovered* team names, so its graph fills in as interviews accumulate.
 
 ## State & Persistence
 
-No backend. `src/store.tsx` is a React context persisted to localStorage under `cyrix-discovery-v3` (bump the key when the persisted shape changes — old data is simply abandoned). **The platform starts clean — there is no seed/demo data and none may be reintroduced** (rollout rule: every insight is earned from real interviews). Until the first interview completes, the Dashboard renders `VisionDashboard` (Dashboard.tsx) — an executive command-center vision state with honest zeros — and swaps to the real intelligence view afterwards. **One interview per department**; starting a new portal conversation for a department (or any reset) archives the old interview to `cyrix-discovery-archive` (best-effort, never silently destroyed).
+No backend. `src/store.tsx` is a React context persisted to localStorage under `cyrix-discovery-v4` (bump the key when the persisted shape changes — old data is simply abandoned). It holds three maps: `people` (primary), `interviews` (**keyed by person id**), `invites` (keyed by token). **The platform starts clean — there is no seed/demo data and none may be reintroduced** (rollout rule: every insight is earned from real interviews). Until the first interview completes, the Dashboard renders `VisionDashboard` (Dashboard.tsx) — an executive command-center vision state with honest zeros — and swaps to the real intelligence view afterwards. **One interview per person**; starting a new conversation for a person (or any reset/removal) archives the old interview to `cyrix-discovery-archive` (best-effort, never silently destroyed).
 
 ## Commands
 
 Stack: Vite 6 + React 18 + TypeScript 5.6 (strict, incl. `noUnusedLocals`) + Tailwind 3. No tests, no linter.
 
 ```bash
-npm run dev        # port 5174 (root app owns 5173)
-npm run build      # esbuild — does NOT type-check
+npm run dev        # port 5174 (root app owns 5173); runs `tokens` first
+npm run tokens     # cyra-tokens.json → src/tokens.css (generated; never hand-edit)
+npm run build      # esbuild — does NOT type-check; runs `tokens` first
 npm run typecheck  # tsc --noEmit — the ONLY real type check
 ```
 
@@ -48,13 +51,36 @@ npm run typecheck  # tsc --noEmit — the ONLY real type check
 - Editing `tailwind.config.js` requires restarting the dev server (config is cached; new tokens fail in `@apply` until restart).
 - If the browser-preview MCP pane wedges (blank screenshots while the DOM is verifiably fine), fall back to headless Chrome: `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --screenshot=<path> --window-size=1280,2400 http://localhost:5174/#innovation` (min width ~500px is silently enforced).
 
+## Design governance — the CYRA Design System is the constitution
+
+Discovery is the **reference implementation of the CYRA Design System** (v1, frozen). The system governs; this app conforms. `DESIGN_COMPLIANCE_REPORT.md` is the standing audit — read it before any UI change, and update it when you close or open a finding.
+
+**Non-negotiables (violating any of these is a defect, not a preference):**
+- **Tokens only.** `cyra-tokens.json` → `npm run tokens` → `src/tokens.css` (generated; never hand-edit) → `tailwind.config.js` extends **only** from those CSS variables; `src/tokens.ts` carries them into SVG paint. *A value that isn't a token is a review finding* (13). The colour, spacing, radius, shadow, weight and type scales are **replaced, not extended** — off-system values fail to compile. Keep it that way.
+- **Palette is closed** (03): `ink` `paper` `red` + the neutral scale + the four ratified semantics. No new hues. **Red appears at most once per composition** (P6) — on any screen with the wordmark, the wordmark's period *is* that red.
+- **Zero radius** (P7/14): constitutional. Changing it is an amendment, not a style tweak.
+- **No shadows** (03): elevation is a neutral value step.
+- **No pulse-line, no icon mark** (01; 00 caveat 2): the ECG "pulse trace" and the teal square were removed as the exact devices the brand retired. Do not reintroduce them. Identity is `CYRA.` + tracked `DISCOVERY` label, wordmark-only.
+- **Provenance is invariant** (10/P4/06): machine-produced content *always* carries `DRAFT — UNVALIDATED` + a `ProvenanceLine`. AI output and validated knowledge are never visually interchangeable. Never ship an AI artefact without its state.
+- **Motion vocabulary is closed** (08): 120/150/200ms, one easing, all from tokens. Indeterminate work = the hairline sweep (`working-rule`) + text naming the **real** step. Pulsing, bouncing dots, shimmer and spinners are prohibited — they were removed once already.
+- **Voice** (11): sentence case for prose; uppercase only for the micro-label instrument; display headings are short finished sentences ending in a period; buttons are verbs; no emoji, no exclamation marks.
+
+**Open decisions must be escalated, never guessed** (00): E4 (nav pattern) and E5 (ratifying Graph/Founder Brief/Opportunity Card as reference components) are unresolved; E6 (the expert review gate) is a product decision. E1 (typeface roles), E2 (semantic palette) and E3 (module identity) were **ratified 2026-07-17** and are recorded in `cyra-tokens.json`.
+
+Amendments follow 00's rule: explicit written revision naming what changed and why — never silent drift.
+
 ## Design Language
 
-Executive-calm, instrument-heritage: canvas `porcelain`, ink `carbon`, primary `petrol` teal, live accent `pulse` teal, `amber` = attention, `signal` coral-red **reserved for risk/critical only** (never a casual accent). Type: Schibsted Grotesk (display) / IBM Plex Sans (body) / IBM Plex Mono (eyebrows, tags, data) via Google Fonts `<link>` in `index.html`. Tokens live in `tailwind.config.js`; shared primitives in `src/components/ui.tsx` (`Card`, `Tag`, `Meter`, `.input`/`.btn-*` utilities in `index.css`).
+Governed by the CYRA Design System (above) — **this section describes the conforming expression, not an independent system.**
 
-- **Signature element:** the `PulseTrace` (ui.tsx) — an ECG line with one beat per discovery dimension whose amplitude grows with coverage. It appears on department cards, the conversation header and reports. SVG strokes hardcode hexes (`#14b8a3`, `#cfd9d6`) — keep in sync with `pulse-500`/`porcelain-300` if the palette changes; same for the favicon/`theme-color` in `index.html`.
-- Dashboard categorical trio (opportunity horizons) is CVD-validated: `#12907f` / `#c76e0a` / `#8464e0` — don't swap casually.
-- Participant-side rule: minimal chrome, no internal mechanics (no fact counts, no dimension meters), warm consultant tone. Internal side may be dense.
+Monochrome carries the structure; the single red carries identity. Canvas `neutral-050` (working screens are light-dominant); cards are `paper` + hairline `neutral-150`; ink `#0B0B0B`; secondary text `neutral-700`, micro-labels/metadata `neutral-500`. Semantics (ratified E2): `success` `#1E7A46`, `warning` `#B07A1E`, `error` `#B01E1E` — deliberately distinct from brand red so alarm ≠ identity.
+
+Two voices (ratified E1): **Schibsted Grotesk** = display (headings, hero numbers, the wordmark); **IBM Plex Sans** = body **and** the tracked micro-label instrument (`.eyebrow`, 12px/0.18em/uppercase/medium/neutral-500). The monospace voice is retired. Three weights only: `font-regular` / `font-medium` / `font-heavy`. All quantitative display uses tabular lining figures (set globally on `body`).
+
+Shared primitives live in `src/components/ui.tsx`: `Wordmark`, `ModuleLabel`, `InitiativeLabel`, `Card`, `Tag` (text badge, never a coloured pill), `ProvenanceBadge`, `ProvenanceLine`, `ProgressRule` (determinate hairline), `WorkingRule` (indeterminate sweep + staged text), `Stat`, `SectionHeading`. Utilities `.card` / `.eyebrow` / `.btn-primary` / `.btn-secondary` / `.btn-tertiary` / `.btn-destructive` / `.input` are in `src/index.css`.
+
+- **Participant side** (`Portal`): minimal chrome, no internal mechanics, warm consultant tone, ≥44px targets. **Internal side** may be denser. Same frame, same tokens — rooms in one building (P10).
+- **Gotcha:** editing `tailwind.config.js` requires restarting the dev server (the running process caches the config) — a new token silently fails to compile until restart.
 
 ## Voice
 

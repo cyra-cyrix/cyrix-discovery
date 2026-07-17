@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { DEPARTMENTS, deptById } from '../data/departments'
 import { archiveInterview, useStore } from '../store'
-import type { ChatMessage, Interview, ParticipantContext } from '../types'
-import { newInterview } from '../types'
+import type { ChatMessage, Interview, ParticipantContext, Person } from '../types'
+import { newInterview, newPersonId } from '../types'
+import { discoveredDepartments, personFromContext } from '../org'
 import { liveAnalysis, liveOpening, liveTurn } from '../engine/claude'
-import { detectSystems, simulatedAnalysis, simulatedOpening, simulatedTurn } from '../engine/simulated'
+import { detectSystems, inferDepartmentName, simulatedAnalysis, simulatedOpening, simulatedTurn } from '../engine/simulated'
 import { lookupDecision } from '../invites'
-import { PulseTrace, Wordmark } from '../components/ui'
+import { InitiativeLabel, ModuleLabel, ProgressRule, WorkingRule, Wordmark, coverageDepth } from '../components/ui'
+import { cyra } from '../tokens'
 
 // ---------------------------------------------------------------------------
 // The Discovery Conversation Portal — the only surface participants ever see.
@@ -30,23 +31,28 @@ function speechCtor(): AnyCtor | null {
   return (w.SpeechRecognition as AnyCtor) ?? (w.webkitSpeechRecognition as AnyCtor) ?? null
 }
 
-export function Portal({ inviteToken = null, presetDeptId = null, internal = false, onFinished, onExit }: {
+export function Portal({ inviteToken = null, presetPersonId = null, internal = false, onFinished, onExit }: {
   inviteToken?: string | null // participant path — unique invitation token from the URL
-  presetDeptId?: string | null // internal test-run path only
+  presetPersonId?: string | null // internal test-run path only
   internal?: boolean
-  onFinished?: (deptId: string) => void
+  onFinished?: (personId: string) => void
   onExit?: () => void
 }) {
   const store = useStore()
   const live = Boolean(store.settings.apiKey)
 
+  // The invitation identifies the PERSON. Their department is never taken from
+  // the URL — it is discovered in the conversation.
+  const invitedPersonId = inviteToken ? store.invites[inviteToken]?.personId ?? null : null
+
   const [step, setStep] = useState<Step>('welcome')
-  const [deptId, setDeptId] = useState<string | null>(presetDeptId)
+  const [personId, setPersonId] = useState<string | null>(presetPersonId ?? invitedPersonId)
   const [voiceMode, setVoiceMode] = useState(false)
+  const [stage, setStage] = useState('Reading the conversation')
   const [error, setError] = useState<string | null>(null)
 
-  const interview = deptId ? store.interviews[deptId] : undefined
-  const dept = deptId ? deptById(deptId) : null
+  const interview = personId ? store.interviews[personId] : undefined
+  const knownPerson = personId ? store.people[personId] : undefined
 
   // Invitation gate (participant path only). Validation lives in invites.ts —
   // the backend seam — so this component never needs to change. Decided once
@@ -62,41 +68,49 @@ export function Portal({ inviteToken = null, presetDeptId = null, internal = fal
   // Resume: a reload mid-conversation finds the in-progress interview by token.
   const resumable = !internal && inviteToken
     ? Object.values(store.interviews).find((i) => i.inviteToken === inviteToken && i.status === 'in_progress' && i.participant)
-    : presetDeptId && interview?.status === 'in_progress' && interview.participant
+    : presetPersonId && interview?.status === 'in_progress' && interview.participant
       ? interview
       : undefined
 
   // ---------- flow transitions ----------
 
-  async function startConversation(ctx: ParticipantContext, chosenDeptId: string, useVoice: boolean) {
-    setDeptId(chosenDeptId)
+  async function startConversation(ctx: ParticipantContext, useVoice: boolean) {
     setVoiceMode(useVoice)
     setError(null)
 
-    const existing = store.interviews[chosenDeptId]
+    // Resolve the person: the invited record, or a new one created from what
+    // they just told us (a participant may arrive without a roster entry).
+    const id = personId ?? newPersonId()
+    if (!store.people[id]) {
+      store.upsertPerson(personFromContext(id, ctx))
+    } else if (ctx.department.trim() && !store.people[id].department) {
+      store.upsertPerson({ ...store.people[id], department: ctx.department.trim() })
+    }
+    setPersonId(id)
+
+    const existing = store.interviews[id]
     if (existing && existing.status !== 'not_started') archiveInterview(existing)
 
     const mode = live ? 'live' : 'simulated'
-    const iv = newInterview(chosenDeptId, mode, ctx, internal ? null : inviteToken)
-    store.setInterview(chosenDeptId, iv)
+    const iv = newInterview(id, mode, ctx, internal ? null : inviteToken)
+    store.setInterview(id, iv)
     setStep('conversation')
 
-    const chosenDept = deptById(chosenDeptId)
     if (mode === 'simulated') {
-      store.updateInterview(chosenDeptId, (p) => ({
+      store.updateInterview(id, (p) => ({
         ...p,
         messages: [{ id: nextId(), role: 'ai', text: simulatedOpening(ctx) }],
       }))
     } else {
       try {
-        const opening = await liveOpening(store.settings.apiKey, store.settings.model, chosenDept, store.interviews, ctx)
-        store.updateInterview(chosenDeptId, (p) => ({
+        const opening = await liveOpening(store.settings.apiKey, store.settings.model, store.interviews, id, ctx)
+        store.updateInterview(id, (p) => ({
           ...p,
           messages: [{ id: nextId(), role: 'ai', text: opening }],
         }))
       } catch {
         // fall back silently — the conversation must never dead-end for a participant
-        store.updateInterview(chosenDeptId, (p) => ({
+        store.updateInterview(id, (p) => ({
           ...p,
           mode: 'simulated',
           messages: [{ id: nextId(), role: 'ai', text: simulatedOpening(ctx) }],
@@ -106,34 +120,41 @@ export function Portal({ inviteToken = null, presetDeptId = null, internal = fal
   }
 
   async function submit() {
-    if (!interview || !dept || !deptId) return
+    if (!interview || !personId) return
     setStep('generating')
     setError(null)
-    store.updateInterview(deptId, (p) => ({ ...p, status: 'generating' }))
+    store.updateInterview(personId, (p) => ({ ...p, status: 'generating' }))
     try {
       const current = { ...interview, status: 'generating' as const }
+      const knownNames = discoveredDepartments(store.interviews).map((d) => d.name)
       const analysis = interview.mode === 'live'
-        ? await liveAnalysis(store.settings.apiKey, store.settings.model, dept, current)
-        : simulatedAnalysis(dept, current)
-      store.updateInterview(deptId, (p) => ({
+        ? await liveAnalysis(store.settings.apiKey, store.settings.model, current, setStage)
+        : simulatedAnalysis(current, knownNames)
+      store.updateInterview(personId, (p) => ({
         ...p,
         status: 'complete',
         completedAt: Date.now(),
+        departmentName: analysis.departmentName,
         profile: analysis.profile,
         report: analysis.report,
         opportunities: analysis.opportunities,
         edges: analysis.edges,
       }))
+      // Record the discovered department back onto the person record.
+      const person = store.people[personId]
+      if (person && analysis.departmentName) {
+        store.upsertPerson({ ...person, department: analysis.departmentName })
+      }
       // Close out the invitation this conversation was started from.
       if (inviteToken) {
         const invite = store.invites[inviteToken]
         if (invite) store.upsertInvite({ ...invite, completedAt: Date.now() })
       }
-      if (internal && onFinished) onFinished(deptId)
+      if (internal && onFinished) onFinished(personId)
       else setStep('done')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong. Please try submitting again.')
-      store.updateInterview(deptId, (p) => ({ ...p, status: 'in_progress' }))
+      store.updateInterview(personId, (p) => ({ ...p, status: 'in_progress' }))
       setStep('summary')
     }
   }
@@ -141,11 +162,14 @@ export function Portal({ inviteToken = null, presetDeptId = null, internal = fal
   // ---------- render ----------
 
   return (
-    <div className="min-h-screen bg-porcelain-100">
-      <header className="mx-auto flex h-16 max-w-3xl items-center justify-between px-5">
-        <Wordmark />
+    <div className="min-h-screen bg-neutral-050">
+      <header className="mx-auto flex h-16 max-w-3xl items-center justify-between px-6">
+        <div className="flex items-center gap-4">
+          <Wordmark />
+          <ModuleLabel>Discovery</ModuleLabel>
+        </div>
         {internal && onExit && (
-          <button onClick={onExit} className="eyebrow hover:text-petrol-700">← Back</button>
+          <button onClick={onExit} className="eyebrow hover:text-ink">← Back</button>
         )}
       </header>
 
@@ -155,7 +179,7 @@ export function Portal({ inviteToken = null, presetDeptId = null, internal = fal
           onBegin={() => setStep('context')}
           onResume={() => {
             if (!resumable) return
-            setDeptId(resumable.departmentId)
+            setPersonId(resumable.personId)
             setStep('conversation')
           }}
         />
@@ -163,15 +187,15 @@ export function Portal({ inviteToken = null, presetDeptId = null, internal = fal
 
       {step === 'context' && (
         <ContextForm
-          presetDeptId={internal ? presetDeptId : null}
-          onSubmit={(ctx, chosenDept, useVoice) => void startConversation(ctx, chosenDept, useVoice)}
+          knownPerson={knownPerson}
+          onSubmit={(ctx, useVoice) => void startConversation(ctx, useVoice)}
         />
       )}
 
-      {step === 'conversation' && interview && dept && deptId && (
+      {step === 'conversation' && interview && personId && (
         <Conversation
           interview={interview}
-          deptId={deptId}
+          personId={personId}
           voiceMode={voiceMode}
           onVoiceModeChange={setVoiceMode}
           onWrapUp={() => setStep('summary')}
@@ -180,13 +204,12 @@ export function Portal({ inviteToken = null, presetDeptId = null, internal = fal
         />
       )}
 
-      {step === 'summary' && interview && dept && deptId && (
+      {step === 'summary' && interview && personId && (
         <Summary
           interview={interview}
-          deptName={dept.name}
           error={error}
           onAddition={(text) => {
-            store.updateInterview(deptId, (p) => ({
+            store.updateInterview(personId, (p) => ({
               ...p,
               messages: [...p.messages, { id: nextId(), role: 'user', text: `(Correction / addition to the summary) ${text}` }],
               facts: [...p.facts, { dimension: 'flow', text }],
@@ -197,30 +220,31 @@ export function Portal({ inviteToken = null, presetDeptId = null, internal = fal
         />
       )}
 
-      {step === 'generating' && interview && (
-        <main className="mx-auto flex max-w-md flex-col items-center px-6 pt-28 text-center">
-          <PulseTrace coverage={interview.coverage} width={260} height={48} />
-          <h2 className="mt-6 font-display text-xl font-bold text-carbon">Recording your discovery…</h2>
-          <p className="mt-2 text-sm leading-relaxed text-slate">
-            Your conversation is being turned into structured understanding. This takes a moment.
+      {step === 'generating' && (
+        <main className="mx-auto max-w-md px-6 pt-28">
+          <h2 className="font-display text-heading font-heavy text-ink">Recording your discovery.</h2>
+          <p className="mb-6 mt-2 text-bodySmall text-neutral-700">
+            Your conversation is being turned into structured understanding. This takes about a minute.
+            You can leave this page and come back — nothing is lost.
           </p>
+          <WorkingRule stage={stage} />
         </main>
       )}
 
       {step === 'done' && (
         <main className="mx-auto flex max-w-md flex-col items-center px-6 pt-24 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-petrol-50">
-            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#0e5a52" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <div className="flex h-14 w-14 items-center justify-center bg-neutral-050">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke={cyra.ink} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M20 6L9 17l-5-5" />
             </svg>
           </div>
-          <h2 className="mt-6 font-display text-2xl font-bold text-carbon">Thank you.</h2>
-          <p className="mt-3 text-[15px] leading-relaxed text-slate">
+          <h2 className="mt-6 font-display text-display2 font-heavy text-ink">Thank you.</h2>
+          <p className="mt-4 text-body text-neutral-700">
             What you shared is now part of how Cyrix understands itself. Your experience — the real work, not the
             org chart — will directly shape where we invest in better systems. If anything comes to mind later,
             you're welcome to reach out to the Innovation Team.
           </p>
-          <p className="mt-6 font-mono text-[11px] uppercase tracking-[0.14em] text-slate-light">
+          <p className="mt-6 font-sans text-label uppercase tracking-label text-neutral-500">
             You may close this window
           </p>
         </main>
@@ -247,10 +271,11 @@ function InviteNotice({ decision }: { decision: 'invalid' | 'disabled' | 'comple
     },
   }[decision]
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-porcelain-100 px-6 text-center">
+    <div className="flex min-h-screen flex-col items-center justify-center bg-neutral-050 px-6 text-center">
       <Wordmark />
-      <h1 className="mt-6 font-display text-2xl font-bold text-carbon">{copy.title}</h1>
-      <p className="mt-3 max-w-sm text-sm leading-relaxed text-slate">{copy.body}</p>
+      <div className="mt-2"><InitiativeLabel /></div>
+      <h1 className="mt-6 font-display text-display2 font-heavy text-ink">{copy.title}</h1>
+      <p className="mt-4 max-w-sm text-bodySmall text-neutral-700">{copy.body}</p>
     </div>
   )
 }
@@ -264,15 +289,15 @@ function Welcome({ onBegin, resume, onResume }: {
 }) {
   return (
     <main className="mx-auto max-w-xl px-6 pb-16 pt-12 sm:pt-20">
-      <p className="eyebrow mb-4">Cyrix Discovery Initiative</p>
-      <h1 className="font-display text-3xl font-bold leading-tight tracking-tight text-carbon sm:text-4xl">
-        Help us understand how your work <span className="text-petrol-700">really</span> happens.
+      <p className="eyebrow mb-4">CYRA Discovery Initiative</p>
+      <h1 className="font-display text-display2 font-heavy leading-tight tracking-display text-ink sm:text-display2">
+        Help us understand how your work <span className="text-ink">really</span> happens.
       </h1>
-      <p className="mt-5 text-[15px] leading-relaxed text-slate">
+      <p className="mt-6 text-body text-neutral-700">
         You're about to have a conversation with an experienced consultant — about your ordinary working day.
         It takes around twenty minutes.
       </p>
-      <ul className="mt-7 space-y-3.5">
+      <ul className="mt-8 space-y-4.5">
         {[
           'This is not a performance evaluation — nothing here reflects on you or your team.',
           'There are no right or wrong answers. The ordinary, frustrating details are the valuable ones.',
@@ -280,21 +305,21 @@ function Welcome({ onBegin, resume, onResume }: {
           'The purpose is to improve your systems using AI, so the tedious parts of the job get lighter.',
           'Every department\'s experience matters. Yours is the only window we have into yours.',
         ].map((t, i) => (
-          <li key={i} className="flex items-start gap-3 text-sm leading-relaxed text-carbon">
-            <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-pulse-500" />
+          <li key={i} className="flex items-start gap-4 text-bodySmall text-ink">
+            <span className="mt-[7px] h-1.5 w-1.5 shrink-0 bg-neutral-500" />
             {t}
           </li>
         ))}
       </ul>
-      <div className="mt-9 flex flex-wrap items-center gap-4">
-        <button onClick={onBegin} className="btn-primary !px-6 !py-3 text-[15px]">
+      <div className="mt-8 flex flex-wrap items-center gap-4">
+        <button onClick={onBegin} className="btn-primary !px-6 !py-4 text-body">
           I'm ready — let's begin
         </button>
         {resume && (
-          <button onClick={onResume} className="btn-ghost">Continue where I left off</button>
+          <button onClick={onResume} className="btn-secondary">Continue where I left off</button>
         )}
       </div>
-      <p className="mt-6 text-xs leading-relaxed text-slate-light">
+      <p className="mt-6 text-label text-neutral-500">
         Your words are seen only by the Cyrix Innovation Team, and only to design better systems.
       </p>
     </main>
@@ -303,55 +328,61 @@ function Welcome({ onBegin, resume, onResume }: {
 
 // ---------- Basic context ----------
 
-function ContextForm({ presetDeptId, onSubmit }: {
-  presetDeptId: string | null
-  onSubmit: (ctx: ParticipantContext, deptId: string, useVoice: boolean) => void
+function ContextForm({ knownPerson, onSubmit }: {
+  knownPerson: Person | undefined
+  onSubmit: (ctx: ParticipantContext, useVoice: boolean) => void
 }) {
-  const [name, setName] = useState('')
-  const [designation, setDesignation] = useState('')
-  const [deptId, setDeptId] = useState(presetDeptId ?? '')
-  const [stateBranch, setStateBranch] = useState('')
+  const [name, setName] = useState(knownPerson?.name === 'Name withheld' ? '' : knownPerson?.name ?? '')
+  const [designation, setDesignation] = useState(knownPerson?.designation ?? '')
+  const [department, setDepartment] = useState(knownPerson?.department ?? '')
+  const [stateBranch, setStateBranch] = useState(knownPerson?.state ?? '')
   const [years, setYears] = useState('')
   const [responsibility, setResponsibility] = useState('')
   const [useVoice, setUseVoice] = useState(false)
   const voiceAvailable = speechCtor() !== null
 
-  const ready = designation.trim() && deptId && stateBranch.trim() && years.trim() && responsibility.trim()
+  const ready = designation.trim() && stateBranch.trim() && years.trim() && responsibility.trim()
 
   return (
     <main className="mx-auto max-w-xl px-6 pb-16 pt-8">
       <p className="eyebrow mb-2">Before we start</p>
-      <h1 className="font-display text-2xl font-bold tracking-tight text-carbon">A little context about you</h1>
-      <p className="mt-2 text-sm leading-relaxed text-slate">
+      <h1 className="font-display text-display2 font-heavy tracking-display text-ink">A little context about you</h1>
+      <p className="mt-2 text-bodySmall text-neutral-700">
         This helps the conversation start where your work actually is — nothing more.
       </p>
 
       <form
-        className="mt-7 space-y-5"
+        className="mt-8 space-y-6"
         onSubmit={(e) => {
           e.preventDefault()
           if (!ready) return
           onSubmit(
-            { name: name.trim(), designation: designation.trim(), stateBranch: stateBranch.trim(), yearsAtCyrix: years.trim(), responsibility: responsibility.trim() },
-            deptId,
+            {
+              name: name.trim(),
+              designation: designation.trim(),
+              department: department.trim(),
+              stateBranch: stateBranch.trim(),
+              yearsAtCyrix: years.trim(),
+              responsibility: responsibility.trim(),
+            },
             useVoice,
           )
         }}
       >
-        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
           <Field label="Name" hint="optional">
             <input value={name} onChange={(e) => setName(e.target.value)} className="input" placeholder="How should we address you?" />
           </Field>
           <Field label="Designation">
             <input value={designation} onChange={(e) => setDesignation(e.target.value)} className="input" placeholder="e.g. Warehouse Manager" required />
           </Field>
-          <Field label="Department">
-            <select value={deptId} onChange={(e) => setDeptId(e.target.value)} className="input" required disabled={Boolean(presetDeptId)}>
-              <option value="" disabled>Select your department</option>
-              {DEPARTMENTS.map((d) => (
-                <option key={d.id} value={d.id}>{d.name}</option>
-              ))}
-            </select>
+          <Field label="Department or team" hint="optional — in your own words">
+            <input
+              value={department}
+              onChange={(e) => setDepartment(e.target.value)}
+              className="input"
+              placeholder="Whatever you call it internally"
+            />
           </Field>
           <Field label="State / Branch">
             <input value={stateBranch} onChange={(e) => setStateBranch(e.target.value)} className="input" placeholder="e.g. Kerala — Kochi HO" required />
@@ -373,7 +404,7 @@ function ContextForm({ presetDeptId, onSubmit }: {
 
         <div>
           <p className="eyebrow mb-2">How would you like to talk?</p>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <ModeChoice
               selected={!useVoice}
               onSelect={() => setUseVoice(false)}
@@ -388,10 +419,10 @@ function ContextForm({ presetDeptId, onSubmit }: {
               disabled={!voiceAvailable}
             />
           </div>
-          <p className="mt-2 text-xs text-slate-light">You can switch between speaking and typing at any point.</p>
+          <p className="mt-2 text-label text-neutral-500">You can switch between speaking and typing at any point.</p>
         </div>
 
-        <button type="submit" disabled={!ready} className="btn-primary !px-6 !py-3 text-[15px]">
+        <button type="submit" disabled={!ready} className="btn-primary !px-6 !py-4 text-body">
           Start the conversation
         </button>
       </form>
@@ -402,9 +433,9 @@ function ContextForm({ presetDeptId, onSubmit }: {
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <span className="eyebrow mb-1.5 block">
+      <span className="eyebrow mb-2 block">
         {label}
-        {hint && <span className="ml-1.5 normal-case tracking-normal text-slate-light">· {hint}</span>}
+        {hint && <span className="ml-2 normal-case tracking-normal text-neutral-500">· {hint}</span>}
       </span>
       {children}
     </label>
@@ -423,22 +454,22 @@ function ModeChoice({ selected, onSelect, title, desc, disabled = false }: {
       type="button"
       onClick={onSelect}
       disabled={disabled}
-      className={`rounded-xl border p-4 text-left transition-colors ${
-        selected ? 'border-petrol-600 bg-petrol-50' : 'border-porcelain-300 bg-white hover:border-petrol-500'
-      } ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
+      className={` border p-4 text-left transition-colors ${
+ selected ? 'border-ink bg-neutral-050' : 'border-neutral-150 bg-paper hover:border-ink'
+ } ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
       aria-pressed={selected}
     >
-      <span className="font-display text-sm font-bold text-carbon">{title}</span>
-      <span className="mt-1 block text-xs leading-relaxed text-slate">{desc}</span>
+      <span className="font-display text-bodySmall font-heavy text-ink">{title}</span>
+      <span className="mt-2 block text-label text-neutral-700">{desc}</span>
     </button>
   )
 }
 
 // ---------- Conversation ----------
 
-function Conversation({ interview, deptId, voiceMode, onVoiceModeChange, onWrapUp, error, setError }: {
+function Conversation({ interview, personId, voiceMode, onVoiceModeChange, onWrapUp, error, setError }: {
   interview: Interview
-  deptId: string
+  personId: string
   voiceMode: boolean
   onVoiceModeChange: (v: boolean) => void
   onWrapUp: () => void
@@ -446,7 +477,6 @@ function Conversation({ interview, deptId, voiceMode, onVoiceModeChange, onWrapU
   setError: (e: string | null) => void
 }) {
   const store = useStore()
-  const dept = deptById(deptId)
   const [draft, setDraft] = useState('')
   const [thinking, setThinking] = useState(false)
   const [listening, setListening] = useState(false)
@@ -518,13 +548,13 @@ function Conversation({ interview, deptId, voiceMode, onVoiceModeChange, onWrapU
 
     const userMsg: ChatMessage = { id: nextId(), role: 'user', text }
     const withUser: Interview = { ...interview, messages: [...interview.messages, userMsg] }
-    store.setInterview(deptId, withUser)
+    store.setInterview(personId, withUser)
     setThinking(true)
 
     try {
       if (interview.mode === 'live') {
-        const result = await liveTurn(store.settings.apiKey, store.settings.model, dept, store.interviews, withUser.messages, interview.participant)
-        store.updateInterview(deptId, (p) => ({
+        const result = await liveTurn(store.settings.apiKey, store.settings.model, store.interviews, personId, withUser.messages, interview.participant)
+        store.updateInterview(personId, (p) => ({
           ...p,
           messages: [...p.messages, { id: nextId(), role: 'ai', text: result.reply }],
           facts: [...p.facts, ...result.facts],
@@ -533,7 +563,7 @@ function Conversation({ interview, deptId, voiceMode, onVoiceModeChange, onWrapU
       } else {
         const result = simulatedTurn(withUser, text)
         await new Promise((r) => setTimeout(r, 700 + Math.random() * 600))
-        store.updateInterview(deptId, (p) => ({
+        store.updateInterview(personId, (p) => ({
           ...p,
           messages: [...p.messages, { id: nextId(), role: 'ai', text: result.reply }],
           facts: [...p.facts, ...result.facts],
@@ -548,15 +578,15 @@ function Conversation({ interview, deptId, voiceMode, onVoiceModeChange, onWrapU
   }
 
   return (
-    <main className="mx-auto flex h-[calc(100vh-64px)] max-w-3xl flex-col px-4 pb-4 sm:px-5">
+    <main className="mx-auto flex h-[calc(100vh-64px)] max-w-3xl flex-col px-4 pb-4 sm:px-6">
       <div className="card flex min-h-0 flex-1 flex-col overflow-hidden">
         {/* quiet header: progress only, no internal mechanics */}
-        <header className="flex items-center justify-between gap-3 border-b border-porcelain-200 px-4 py-2.5">
-          <PulseTrace coverage={interview.coverage} width={150} height={24} />
+        <header className="flex items-center justify-between gap-4 border-b border-neutral-150 px-4 py-2">
+          <div className="w-40"><ProgressRule value={coverageDepth(interview.coverage)} /></div>
           <div className="flex items-center gap-2">
             <button
               onClick={() => { if (listening) stopListening(); onVoiceModeChange(!voiceMode) }}
-              className="btn-ghost !px-3 !py-1.5 text-xs"
+              className="btn-secondary !px-4 !py-2 text-label"
               disabled={!voiceMode && speechCtor() === null}
             >
               {voiceMode ? 'Switch to typing' : 'Switch to voice'}
@@ -564,7 +594,7 @@ function Conversation({ interview, deptId, voiceMode, onVoiceModeChange, onWrapU
             <button
               onClick={onWrapUp}
               disabled={!canWrapUp}
-              className={canWrapUp && avgCoverage > 0.5 ? 'btn-primary !px-3 !py-1.5 text-xs' : 'btn-ghost !px-3 !py-1.5 text-xs'}
+              className={canWrapUp && avgCoverage > 0.5 ? 'btn-primary !px-4 !py-2 text-label' : 'btn-secondary !px-4 !py-2 text-label'}
               title={canWrapUp ? 'Review what the consultant understood' : 'A few more answers first'}
             >
               Wrap up
@@ -572,14 +602,14 @@ function Conversation({ interview, deptId, voiceMode, onVoiceModeChange, onWrapU
           </div>
         </header>
 
-        <div ref={scrollRef} className="rail-scroll flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6">
+        <div ref={scrollRef} className="rail-scroll flex-1 space-y-4 overflow-y-auto px-4 py-6 sm:px-6">
           {messages.map((m) => (
             <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
               <div
                 className={
                   m.role === 'user'
-                    ? 'max-w-[85%] rounded-2xl rounded-br-md bg-petrol-700 px-4 py-3 text-[15px] leading-relaxed text-white'
-                    : 'max-w-[85%] rounded-2xl rounded-bl-md border border-porcelain-200 bg-porcelain-50 px-4 py-3 text-[15px] leading-relaxed text-carbon'
+                    ? 'max-w-[85%]   bg-ink px-4 py-4 text-body  text-white'
+                    : 'max-w-[85%]   border border-neutral-150 bg-neutral-050 px-4 py-4 text-body  text-ink'
                 }
               >
                 {m.text}
@@ -587,38 +617,31 @@ function Conversation({ interview, deptId, voiceMode, onVoiceModeChange, onWrapU
             </div>
           ))}
           {thinking && (
-            <div className="flex justify-start">
-              <div className="rounded-2xl rounded-bl-md border border-porcelain-200 bg-porcelain-50 px-4 py-3">
-                <span className="inline-flex gap-1.5" aria-label="The consultant is thinking">
-                  <Dot delay="0ms" /><Dot delay="150ms" /><Dot delay="300ms" />
-                </span>
-              </div>
+            <div className="max-w-[85%] pt-2">
+              <WorkingRule stage="Reading your answer" />
             </div>
           )}
         </div>
 
         {error && (
-          <div className="mx-4 mb-2 rounded-lg border border-signal-100 bg-signal-50 px-3 py-2 text-xs text-signal-600" role="alert">
+          <div className="mx-4 mb-2 border border-error bg-neutral-050 px-4 py-2 text-label text-error" role="alert">
             {error}
           </div>
         )}
 
-        <footer className="border-t border-porcelain-200 p-3">
+        <footer className="border-t border-neutral-150 p-4">
           <div className="flex items-end gap-2">
             {voiceMode && (
               <button
                 onClick={() => (listening ? stopListening() : startListening())}
-                className={`flex h-[52px] w-[52px] shrink-0 items-center justify-center rounded-full border transition-colors ${
-                  listening ? 'border-signal-500 bg-signal-50 text-signal-600' : 'border-porcelain-300 bg-white text-petrol-700 hover:border-petrol-500'
-                }`}
+                className={`flex h-[52px] w-[52px] shrink-0 items-center justify-center border transition-colors ${
+ listening ? 'border-error bg-neutral-050 text-error' : 'border-neutral-150 bg-paper text-ink hover:border-ink'
+ }`}
                 aria-label={listening ? 'Stop listening' : 'Start speaking'}
                 aria-pressed={listening}
               >
                 {listening ? (
-                  <span className="relative flex h-3.5 w-3.5">
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-sm bg-signal-500 opacity-40" />
-                    <span className="relative inline-flex h-3.5 w-3.5 rounded-sm bg-signal-500" />
-                  </span>
+                  <span className="h-4 w-4 bg-error" aria-hidden="true" />
                 ) : (
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                     <rect x="9" y="2" width="6" height="12" rx="3" />
@@ -638,10 +661,10 @@ function Conversation({ interview, deptId, voiceMode, onVoiceModeChange, onWrapU
               }}
               rows={2}
               placeholder={voiceMode ? (listening ? 'Listening — speak naturally…' : 'Tap the mic and speak, or type…') : 'Answer in your own words — specifics beat summaries…'}
-              className="input min-h-[52px] flex-1 resize-none !py-2.5 leading-relaxed"
+              className="input min-h-[52px] flex-1 resize-none !py-2"
               aria-label="Your answer"
             />
-            <button onClick={() => void send()} disabled={!draft.trim() || thinking} className="btn-primary !py-3">
+            <button onClick={() => void send()} disabled={!draft.trim() || thinking} className="btn-primary !py-4">
               Send
             </button>
           </div>
@@ -651,17 +674,10 @@ function Conversation({ interview, deptId, voiceMode, onVoiceModeChange, onWrapU
   )
 }
 
-function Dot({ delay }: { delay: string }) {
-  return (
-    <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-petrol-600" style={{ animationDelay: delay }} />
-  )
-}
-
 // ---------- "What I understood" ----------
 
-function Summary({ interview, deptName, onSubmit, onAddition, onBackToConversation, error }: {
+function Summary({ interview, onSubmit, onAddition, onBackToConversation, error }: {
   interview: Interview
-  deptName: string
   onSubmit: () => void
   onAddition: (text: string) => void
   onBackToConversation: () => void
@@ -674,7 +690,19 @@ function Summary({ interview, deptName, onSubmit, onAddition, onBackToConversati
   const userText = interview.messages.filter((m) => m.role === 'user').map((m) => m.text).join(' ')
 
   const sections: { label: string; items: string[] }[] = [
-    { label: 'Department', items: [`${deptName}${interview.participant ? ` — ${interview.participant.stateBranch}` : ''}`] },
+    {
+      label: 'Your team',
+      items: [
+        [
+          interview.departmentName?.trim() ||
+            interview.participant?.department.trim() ||
+            inferDepartmentName(interview.participant?.designation ?? ''),
+          interview.participant?.stateBranch,
+        ]
+          .filter(Boolean)
+          .join(' — '),
+      ],
+    },
     {
       label: 'Primary responsibilities',
       items: [interview.participant?.responsibility ?? '', ...byDim(['value'])].filter(Boolean).slice(0, 3),
@@ -686,34 +714,34 @@ function Summary({ interview, deptName, onSubmit, onAddition, onBackToConversati
   ]
 
   return (
-    <main className="mx-auto max-w-2xl px-5 pb-16 pt-6">
+    <main className="mx-auto max-w-2xl px-6 pb-16 pt-6">
       <p className="eyebrow mb-2">Before anything is submitted</p>
-      <h1 className="font-display text-2xl font-bold tracking-tight text-carbon">What I understood</h1>
-      <p className="mt-2 text-sm leading-relaxed text-slate">
+      <h1 className="font-display text-display2 font-heavy tracking-display text-ink">What I understood</h1>
+      <p className="mt-2 text-bodySmall text-neutral-700">
         Please look this over. If something is wrong or missing, correct it below — it matters that we got you right.
       </p>
 
-      <div className="card mt-6 divide-y divide-porcelain-200">
+      <div className="card mt-6 divide-y divide-neutral-150">
         {sections.map((s) => (
-          <div key={s.label} className="px-5 py-4">
+          <div key={s.label} className="px-6 py-4">
             <h3 className="eyebrow mb-2">{s.label}</h3>
             {s.items.length > 0 ? (
-              <ul className="space-y-1.5">
+              <ul className="space-y-2">
                 {s.items.map((it, i) => (
-                  <li key={i} className="flex items-start gap-2.5 text-sm leading-relaxed text-carbon">
-                    <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-pulse-500" />
+                  <li key={i} className="flex items-start gap-2 text-bodySmall text-ink">
+                    <span className="mt-[7px] h-1 w-1 shrink-0 bg-neutral-500" />
                     {it}
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="text-sm italic text-slate-light">We didn't cover this — feel free to add it below.</p>
+              <p className="text-bodySmall italic text-neutral-500">We didn't cover this — feel free to add it below.</p>
             )}
           </div>
         ))}
       </div>
 
-      <div className="card mt-4 p-5">
+      <div className="card mt-4 p-6">
         <h3 className="eyebrow mb-2">Add or correct something</h3>
         <textarea
           value={addition}
@@ -722,7 +750,7 @@ function Summary({ interview, deptName, onSubmit, onAddition, onBackToConversati
           className="input resize-none"
           placeholder="Anything we misunderstood, or anything important we didn't ask about…"
         />
-        <div className="mt-3 flex flex-wrap items-center gap-3">
+        <div className="mt-4 flex flex-wrap items-center gap-4">
           <button
             onClick={() => {
               if (!addition.trim()) return
@@ -731,28 +759,28 @@ function Summary({ interview, deptName, onSubmit, onAddition, onBackToConversati
               setAdded(true)
             }}
             disabled={!addition.trim()}
-            className="btn-ghost"
+            className="btn-secondary"
           >
             Add to my record
           </button>
-          <button onClick={onBackToConversation} className="text-sm text-petrol-700 underline-offset-2 hover:underline">
+          <button onClick={onBackToConversation} className="text-bodySmall text-ink underline-offset-2 hover:underline">
             Continue the conversation instead
           </button>
-          {added && <span className="font-mono text-[11px] text-petrol-600">ADDED ✓</span>}
+          {added && <span className="font-sans text-label text-neutral-700">ADDED ✓</span>}
         </div>
       </div>
 
       {error && (
-        <div className="mt-4 rounded-lg border border-signal-100 bg-signal-50 px-3 py-2 text-xs text-signal-600" role="alert">
+        <div className="mt-4 border border-error bg-neutral-050 px-4 py-2 text-label text-error" role="alert">
           {error}
         </div>
       )}
 
       <div className="mt-6 flex items-center gap-4">
-        <button onClick={onSubmit} className="btn-primary !px-6 !py-3 text-[15px]">
+        <button onClick={onSubmit} className="btn-primary !px-6 !py-4 text-body">
           Looks correct — submit
         </button>
-        <span className="text-xs text-slate-light">Seen only by the Innovation Team.</span>
+        <span className="text-label text-neutral-500">Seen only by the Innovation Team.</span>
       </div>
     </main>
   )

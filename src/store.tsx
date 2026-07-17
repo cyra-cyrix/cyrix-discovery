@@ -1,10 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { Interview, Invite, Settings } from './types'
+import type { Interview, Invite, Person, Settings } from './types'
 
-// v3: first internal rollout — the platform starts clean and earns every
-// insight from real interviews. No seeded data.
-const STORAGE_KEY = 'cyrix-discovery-v3'
+// v4: people-first discovery model — people are the primary entity; interviews
+// are keyed by person; the org structure emerges from interviews. No seed data.
+const STORAGE_KEY = 'cyrix-discovery-v4'
 const ARCHIVE_KEY = 'cyrix-discovery-archive'
 
 /** Preserve a replaced interview so no discovery is ever silently lost. */
@@ -20,21 +20,25 @@ export function archiveInterview(interview: Interview): void {
 }
 
 interface PersistedState {
-  interviews: Record<string, Interview>
+  people: Record<string, Person> // keyed by person id
+  interviews: Record<string, Interview> // keyed by person id
   invites: Record<string, Invite> // keyed by token
   settings: Settings
 }
 
 interface StoreValue extends PersistedState {
-  setInterview: (deptId: string, interview: Interview) => void
-  updateInterview: (deptId: string, patch: (prev: Interview) => Interview) => void
-  resetInterview: (deptId: string) => void
+  upsertPerson: (person: Person) => void
+  removePerson: (personId: string) => void
+  setInterview: (personId: string, interview: Interview) => void
+  updateInterview: (personId: string, patch: (prev: Interview) => Interview) => void
+  resetInterview: (personId: string) => void
   upsertInvite: (invite: Invite) => void
   setSettings: (s: Settings) => void
   resetAll: () => void
 }
 
 const defaultState = (): PersistedState => ({
+  people: {},
   interviews: {},
   invites: {},
   settings: { apiKey: '', model: 'claude-opus-4-8' },
@@ -46,7 +50,7 @@ function load(): PersistedState {
     if (!raw) return defaultState()
     const parsed = JSON.parse(raw) as Partial<PersistedState>
     if (!parsed.interviews || !parsed.settings) return defaultState()
-    return { ...defaultState(), ...parsed, invites: parsed.invites ?? {} }
+    return { ...defaultState(), ...parsed, people: parsed.people ?? {}, invites: parsed.invites ?? {} }
   } catch {
     return defaultState()
   }
@@ -65,24 +69,42 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, [state])
 
-  const setInterview = useCallback((deptId: string, interview: Interview) => {
-    setState((s) => ({ ...s, interviews: { ...s.interviews, [deptId]: interview } }))
+  const upsertPerson = useCallback((person: Person) => {
+    setState((s) => ({ ...s, people: { ...s.people, [person.id]: person } }))
   }, [])
 
-  const updateInterview = useCallback((deptId: string, patch: (prev: Interview) => Interview) => {
+  const removePerson = useCallback((personId: string) => {
     setState((s) => {
-      const prev = s.interviews[deptId]
-      if (!prev) return s
-      return { ...s, interviews: { ...s.interviews, [deptId]: patch(prev) } }
+      const people = { ...s.people }
+      delete people[personId]
+      const interviews = { ...s.interviews }
+      const existing = interviews[personId]
+      if (existing) {
+        archiveInterview(existing)
+        delete interviews[personId]
+      }
+      return { ...s, people, interviews }
     })
   }, [])
 
-  const resetInterview = useCallback((deptId: string) => {
+  const setInterview = useCallback((personId: string, interview: Interview) => {
+    setState((s) => ({ ...s, interviews: { ...s.interviews, [personId]: interview } }))
+  }, [])
+
+  const updateInterview = useCallback((personId: string, patch: (prev: Interview) => Interview) => {
+    setState((s) => {
+      const prev = s.interviews[personId]
+      if (!prev) return s
+      return { ...s, interviews: { ...s.interviews, [personId]: patch(prev) } }
+    })
+  }, [])
+
+  const resetInterview = useCallback((personId: string) => {
     setState((s) => {
       const interviews = { ...s.interviews }
-      const existing = interviews[deptId]
+      const existing = interviews[personId]
       if (existing) archiveInterview(existing)
-      delete interviews[deptId]
+      delete interviews[personId]
       return { ...s, interviews }
     })
   }, [])
@@ -103,8 +125,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const value = useMemo<StoreValue>(
-    () => ({ ...state, setInterview, updateInterview, resetInterview, upsertInvite, setSettings, resetAll }),
-    [state, setInterview, updateInterview, resetInterview, upsertInvite, setSettings, resetAll],
+    () => ({ ...state, upsertPerson, removePerson, setInterview, updateInterview, resetInterview, upsertInvite, setSettings, resetAll }),
+    [state, upsertPerson, removePerson, setInterview, updateInterview, resetInterview, upsertInvite, setSettings, resetAll],
   )
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>

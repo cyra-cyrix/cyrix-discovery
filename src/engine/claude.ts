@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import type { ChatMessage, Coverage, Department, Fact, Interview } from '../types'
+import type { ChatMessage, Coverage, Fact, Interview, ParticipantContext } from '../types'
 import { emptyCoverage } from '../types'
 import { interviewerSystemPrompt, priorFindingsFor, reportSystemPrompt, REPORT_SCHEMA, TURN_SCHEMA } from './prompts'
 import type { AnalysisResult } from './simulated'
@@ -32,7 +32,7 @@ function extractText(response: Anthropic.Message): string {
 
 function guardRefusal(response: Anthropic.Message): void {
   if (response.stop_reason === 'refusal') {
-    throw new Error('The model declined this request. Try rephrasing or continue in simulated mode.')
+    throw new Error('The model declined this request. Try rephrasing or continue in demo mode.')
   }
 }
 
@@ -40,16 +40,16 @@ function guardRefusal(response: Anthropic.Message): void {
 export async function liveTurn(
   apiKey: string,
   model: string,
-  dept: Department,
   interviews: Record<string, Interview>,
+  personId: string,
   messages: ChatMessage[],
-  participant: import('../types').ParticipantContext | null = null,
+  participant: ParticipantContext | null,
 ): Promise<TurnResult> {
   const client = makeClient(apiKey)
   const response = await client.messages.create({
     model,
     max_tokens: 2000,
-    system: interviewerSystemPrompt(dept, priorFindingsFor(interviews, dept.id), participant),
+    system: interviewerSystemPrompt(participant, priorFindingsFor(interviews, personId)),
     messages: toApiMessages(messages),
     output_config: { format: { type: 'json_schema', schema: TURN_SCHEMA } },
   })
@@ -67,15 +67,15 @@ export async function liveTurn(
 export async function liveOpening(
   apiKey: string,
   model: string,
-  dept: Department,
   interviews: Record<string, Interview>,
-  participant: import('../types').ParticipantContext | null = null,
+  personId: string,
+  participant: ParticipantContext | null,
 ): Promise<string> {
   const client = makeClient(apiKey)
   const response = await client.messages.create({
     model,
     max_tokens: 500,
-    system: interviewerSystemPrompt(dept, priorFindingsFor(interviews, dept.id), participant),
+    system: interviewerSystemPrompt(participant, priorFindingsFor(interviews, personId)),
     messages: [
       {
         role: 'user',
@@ -99,12 +99,12 @@ export async function liveOpening(
   return text
 }
 
-/** Full post-interview analysis: profile, report, opportunities, graph edges. */
+/** Full post-interview analysis: discovered team, profile, report, opportunities, edges. */
 export async function liveAnalysis(
   apiKey: string,
   model: string,
-  dept: Department,
   interview: Interview,
+  onStage?: (stage: string) => void,
 ): Promise<AnalysisResult> {
   const client = makeClient(apiKey)
   const transcript = interview.messages
@@ -113,14 +113,17 @@ export async function liveAnalysis(
   const factList = interview.facts.map((f) => `[${f.dimension}] ${f.text}`).join('\n')
   const p = interview.participant
   const participantLine = p
-    ? `PARTICIPANT: ${p.name || 'Name withheld'} · ${p.designation} · ${p.stateBranch} · ${p.yearsAtCyrix} at Cyrix · primary responsibility: "${p.responsibility}"\n\n`
+    ? `PARTICIPANT: ${p.name || 'Name withheld'} · ${p.designation} · ${p.stateBranch} · ${p.yearsAtCyrix} at Cyrix · stated department/team: ${p.department.trim() || '(not stated — infer it)'} · primary responsibility: "${p.responsibility}"\n\n`
     : ''
 
-  // Long structured generation — stream to avoid HTTP timeouts.
+  // Long structured generation — stream to avoid HTTP timeouts. The stream
+  // also gives us honest stage reporting: we name the step we are actually on
+  // (07 § Latency honesty), never a fake percentage.
+  onStage?.('Reading the conversation')
   const stream = client.messages.stream({
     model,
     max_tokens: 16000,
-    system: reportSystemPrompt(dept),
+    system: reportSystemPrompt(interview.participant),
     messages: [
       {
         role: 'user',
@@ -129,25 +132,31 @@ export async function liveAnalysis(
     ],
     output_config: { format: { type: 'json_schema', schema: REPORT_SCHEMA } },
   })
+  stream.on('streamEvent', (event) => {
+    if (event.type === 'content_block_start') onStage?.('Writing the discovery report')
+  })
   const response = await stream.finalMessage()
   guardRefusal(response)
+  onStage?.('Structuring the findings')
   const parsed = JSON.parse(extractText(response)) as {
+    departmentName: string
     profile: AnalysisResult['profile']
     report: AnalysisResult['report']
-    opportunities: Omit<AnalysisResult['opportunities'][number], 'id' | 'departmentId'>[]
+    opportunities: Omit<AnalysisResult['opportunities'][number], 'id' | 'personId'>[]
     edges: AnalysisResult['edges']
   }
   return {
+    departmentName: parsed.departmentName.trim() || interview.participant?.department.trim() || 'Unnamed team',
     profile: parsed.profile,
     report: parsed.report,
     opportunities: parsed.opportunities.map((o, i) => ({
       ...o,
-      id: `${dept.id}-live-${i}`,
-      departmentId: dept.id,
+      id: `${interview.personId}-live-${i}`,
+      personId: interview.personId,
       confidence: Math.max(0, Math.min(100, o.confidence)),
       impact: Math.max(1, Math.min(10, o.impact)),
       effort: Math.max(1, Math.min(10, o.effort)),
     })),
-    edges: parsed.edges.filter((e) => e.from && e.to && e.from !== e.to),
+    edges: parsed.edges.filter((e) => e.from.trim() && e.to.trim() && e.from.trim().toLowerCase() !== e.to.trim().toLowerCase()),
   }
 }

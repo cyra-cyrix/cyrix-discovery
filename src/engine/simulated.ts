@@ -1,9 +1,8 @@
 import type {
-  Coverage, Department, DepartmentProfile, DimensionKey, Fact, GraphEdge,
+  Coverage, DepartmentProfile, DimensionKey, Fact, GraphEdge,
   Interview, Opportunity, OpportunityType, PainPoint, Report,
 } from '../types'
 import { DIMENSIONS } from '../types'
-import { DEPARTMENTS } from '../data/departments'
 
 // ---------------------------------------------------------------------------
 // Offline adaptive interviewer. Not a script: it picks the next probe from
@@ -155,10 +154,21 @@ function lastProbedDimension(interview: Interview): DimensionKey {
 // ---------------------------------------------------------------------------
 
 export interface AnalysisResult {
+  departmentName: string // the discovered team — from context, or inferred
   profile: DepartmentProfile
   report: Report
   opportunities: Opportunity[]
   edges: GraphEdge[]
+}
+
+/** Infer a team name when the participant left the department field blank:
+ *  "Warehouse Manager" → "Warehouse", "Head — Calibration Services" → "Calibration Services". */
+export function inferDepartmentName(designation: string): string {
+  let d = designation.trim()
+  d = d.replace(/^(head|director|manager|lead|chief|vp|gm|agm)\s*(of|—|-|,)?\s*/i, '')
+  d = d.replace(/\s*(manager|head|director|lead|in[- ]?charge|executive|officer|coordinator)\s*$/i, '')
+  d = d.replace(/^[\s—–,-]+|[\s—–,-]+$/g, '')
+  return d || designation.trim() || 'Unnamed team'
 }
 
 const CATEGORY_BY_DIMENSION: Record<DimensionKey, string> = {
@@ -195,9 +205,13 @@ const OPP_TEMPLATES: OppTemplate[] = [
   { match: /status|follow[- ]?up|chase|where is|update/i, type: 'Communication AI', title: 'Self-service status bot', solution: 'A bot that answers status questions automatically from live records, ending the human relay of updates.', complexity: 'Low', horizon: 'quick', impact: 6, effort: 2 },
 ]
 
-export function simulatedAnalysis(dept: Department, interview: Interview): AnalysisResult {
+export function simulatedAnalysis(interview: Interview, knownDeptNames: string[]): AnalysisResult {
   const byDim = (k: DimensionKey) => interview.facts.filter((f) => f.dimension === k).map((f) => f.text)
   const allText = interview.messages.filter((m) => m.role === 'user').map((m) => m.text).join(' ')
+  const departmentName =
+    interview.departmentName?.trim() ||
+    interview.participant?.department.trim() ||
+    inferDepartmentName(interview.participant?.designation ?? '')
 
   const painPoints: PainPoint[] = (['delays', 'manual', 'knowledgeLoss', 'time', 'decisions'] as DimensionKey[])
     .flatMap((k) => byDim(k).slice(0, 2).map((text): PainPoint => ({
@@ -207,19 +221,20 @@ export function simulatedAnalysis(dept: Department, interview: Interview): Analy
     })))
     .slice(0, 6)
 
+  const personId = interview.personId
   const opportunities: Opportunity[] = []
   for (const t of OPP_TEMPLATES) {
     if (t.match.test(allText) && opportunities.length < 4) {
       opportunities.push({
-        id: `${dept.id}-sim-${opportunities.length}`,
-        departmentId: dept.id,
+        id: `${personId}-sim-${opportunities.length}`,
+        personId,
         title: t.title,
         type: t.type,
         problem: painPoints[opportunities.length]?.text ?? 'Recurring manual effort described in the interview.',
         currentCost: 'Recurring staff hours and delay cost described in the interview (to be quantified in follow-up).',
-        peopleInvolved: `${dept.name} team and its upstream/downstream departments.`,
+        peopleInvolved: `The ${departmentName} team and its upstream/downstream teams.`,
         solution: t.solution,
-        businessValue: 'Hours returned to higher-value work; faster turnaround on the department\'s core output.',
+        businessValue: 'Hours returned to higher-value work; faster turnaround on the team\'s core output.',
         complexity: t.complexity,
         confidence: 65 + opportunities.length * 4,
         horizon: t.horizon,
@@ -230,30 +245,31 @@ export function simulatedAnalysis(dept: Department, interview: Interview): Analy
   }
   if (opportunities.length === 0) {
     opportunities.push({
-      id: `${dept.id}-sim-0`, departmentId: dept.id,
-      title: 'Department copilot for daily operations', type: 'Copilot',
+      id: `${personId}-sim-0`, personId,
+      title: 'Team copilot for daily operations', type: 'Copilot',
       problem: 'Fragmented information and repeated manual coordination described in the interview.',
       currentCost: 'Daily coordination overhead across the team.',
-      peopleInvolved: `${dept.name} team.`,
-      solution: 'An assistant grounded in the department\'s records that drafts, finds, and coordinates routine work.',
+      peopleInvolved: `The ${departmentName} team.`,
+      solution: 'An assistant grounded in the team\'s records that drafts, finds, and coordinates routine work.',
       businessValue: 'Measurable reduction in coordination time.',
       complexity: 'Medium', confidence: 60, horizon: 'medium', impact: 6, effort: 5,
     })
   }
 
-  // Graph edges: departments actually mentioned in the conversation.
-  const edges: GraphEdge[] = DEPARTMENTS
-    .filter((d) => d.id !== dept.id)
-    .filter((d) => new RegExp(`\\b${d.short}\\b`, 'i').test(allText) || new RegExp(`\\b${d.name}\\b`, 'i').test(allText))
+  // Emergent edges: other already-discovered teams this conversation mentioned.
+  // The graph grows as interviews accumulate — nothing is assumed up front.
+  const edges: GraphEdge[] = knownDeptNames
+    .filter((name) => name.trim() && name.trim().toLowerCase() !== departmentName.trim().toLowerCase())
+    .filter((name) => new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(allText))
     .slice(0, 4)
-    .map((d) => ({ from: dept.id, to: d.id, label: 'works with' }))
+    .map((name) => ({ from: departmentName, to: name, label: 'works with' }))
 
   const profile: DepartmentProfile = {
-    mission: byDim('value')[0] ?? `${dept.blurb}`,
+    mission: byDim('value')[0] ?? (interview.participant?.responsibility ?? 'To be confirmed in follow-up.'),
     responsibilities: byDim('flow').slice(0, 4),
     criticalProcesses: byDim('flow').slice(0, 3),
-    inputs: ['Work requests from other departments and customers'],
-    outputs: [`${dept.name} deliverables to downstream departments`],
+    inputs: ['Work requests from other teams and customers'],
+    outputs: [`${departmentName} deliverables to downstream teams`],
     stakeholders: edges.map((e) => e.to),
     systems: detectSystems(allText),
     kpis: byDim('impact').slice(0, 3),
@@ -266,7 +282,7 @@ export function simulatedAnalysis(dept: Department, interview: Interview): Analy
 
   const report: Report = {
     executiveSummary:
-      `The ${dept.name} interview surfaced a pattern familiar across Cyrix: capable people compensating for missing structure. ` +
+      `The ${departmentName} interview surfaced a pattern familiar across Cyrix: capable people compensating for missing structure. ` +
       `Work flows through informal channels, key knowledge is concentrated in a few heads, and measurable hours go to searching, chasing and re-entering information. ` +
       `The strongest openings are ${opportunities.slice(0, 2).map((o) => o.title.toLowerCase()).join(' and ')} — both grounded directly in what the interviewee described.`,
     capabilityMap: [
@@ -294,12 +310,12 @@ export function simulatedAnalysis(dept: Department, interview: Interview): Analy
       'Baseline KPI values to measure improvement against',
     ],
     founderBrief:
-      `${dept.name} loses its hours to ${topLoss(byDim)} rather than to its core work. ` +
+      `${departmentName} loses its hours to ${topLoss(byDim)} rather than to its core work. ` +
       `The biggest structural risk is that ${byDim('knowledgeLoss')[0]?.replace(/\.$/, '').toLowerCase() || 'critical know-how is undocumented and concentrated in a few people'}. ` +
       `Deploy first: ${opportunities[0]?.title.toLowerCase() ?? 'a department copilot'} — it is grounded directly in what the team described, is ${opportunities[0]?.complexity.toLowerCase() ?? 'medium'} complexity, and its effect will be visible in the department's turnaround time within a quarter.`,
   }
 
-  return { profile, report, opportunities, edges }
+  return { departmentName, profile, report, opportunities, edges }
 }
 
 function topLoss(byDim: (k: DimensionKey) => string[]): string {

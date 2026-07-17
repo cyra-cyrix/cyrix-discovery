@@ -1,67 +1,108 @@
 /** @type {import('tailwindcss').Config} */
+// CYRA Design System — the theme extends ONLY from the generated custom
+// properties in src/tokens.css (13 § Token pipeline). No raw hex, no raw px.
+// A value that isn't a token is a review finding.
+//
+// Source of truth: cyra-tokens.json → `npm run tokens` → src/tokens.css → here.
+//
+// Several scales are REPLACED rather than extended. That is deliberate: an
+// off-system value should fail to compile, not depend on reviewer vigilance.
+
+const token = (name) => `var(--cyra-${name})`
+
+// 05 § Grid — 8px base unit; every spacing value is a multiple of the base
+// token. Odd and fractional steps are deliberately absent.
+// Tailwind semantics are preserved (p-4 = 16px), so step `n` = n/2 base units.
+const spacing = { 0: '0px', px: '1px' }
+for (const step of [2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 32, 40, 48, 64, 80, 96]) {
+  spacing[step] = `calc(${token('spacing-base')} * ${step / 2})`
+}
+
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
+    // 03 — the palette is closed. Monochrome carries structure; red is identity.
+    colors: {
+      transparent: 'transparent',
+      current: 'currentColor',
+      ink: token('color-ink'),
+      paper: token('color-paper'),
+      red: token('color-red'),
+      neutral: {
+        900: token('color-neutral-900'),
+        700: token('color-neutral-700'),
+        500: token('color-neutral-500'),
+        300: token('color-neutral-300'),
+        150: token('color-neutral-150'),
+        '050': token('color-neutral-050'),
+      },
+      // E2 — ratified 2026-07-17 from 03's recommended palette.
+      success: token('color-semantic-success'),
+      warning: token('color-semantic-warning'),
+      error: token('color-semantic-error'),
+      info: token('color-semantic-info'),
+    },
+    spacing,
+    // P7 / 14 radius.none — zero radius is constitutional.
+    borderRadius: { none: token('radius-none'), DEFAULT: token('radius-none') },
+    // 03 — elevation is a neutral value step, never a shadow.
+    boxShadow: { none: token('shadow-none') },
+    // 04 § 4 — three weights, no thin/light. Named to avoid colliding with the
+    // `font-display` family utility.
+    fontWeight: {
+      regular: token('font-weight-regular'),
+      medium: token('font-weight-medium'),
+      heavy: token('font-weight-display'),
+    },
+    // 04 § Scale — the type scale is closed.
+    fontSize: {
+      display1: [token('font-size-display1'), { lineHeight: token('font-lineHeight-display'), letterSpacing: token('font-tracking-display') }],
+      display2: [token('font-size-display2'), { lineHeight: token('font-lineHeight-display'), letterSpacing: token('font-tracking-display') }],
+      heading: [token('font-size-heading'), { lineHeight: token('font-lineHeight-heading') }],
+      body: [token('font-size-body'), { lineHeight: token('font-lineHeight-body') }],
+      bodySmall: [token('font-size-bodySmall'), { lineHeight: token('font-lineHeight-body') }],
+      label: [token('font-size-label'), { lineHeight: token('font-lineHeight-label') }],
+    },
+    screens: {
+      tablet: token('breakpoints-tablet'),
+      desktop: token('breakpoints-desktop'),
+      wide: token('breakpoints-wide'),
+    },
     extend: {
-      colors: {
-        // canvas — cool porcelain, instrument-panel neutral
-        porcelain: {
-          50: '#f7f9f8',
-          100: '#f1f4f3',
-          200: '#e3e9e7',
-          300: '#cfd9d6',
-        },
-        // ink — deep green-black
-        carbon: {
-          DEFAULT: '#131f1d',
-          800: '#1c2b28',
-          700: '#27403c',
-        },
-        // primary — petrol teal (biomedical instrument heritage)
-        petrol: {
-          900: '#0a3f3a',
-          800: '#0c4c45',
-          700: '#0e5a52',
-          600: '#11695f',
-          500: '#15806f',
-          100: '#d7ebe7',
-          50: '#eaf4f2',
-        },
-        // live accent — the pulse (ECG trace, active states only)
-        pulse: {
-          500: '#14b8a3',
-          400: '#2dd4bd',
-          100: '#ccf3ec',
-        },
-        // attention — pain points, medium risk
-        amber: {
-          600: '#c76e0a',
-          500: '#d97e0f',
-          100: '#f9ead3',
-          50: '#fcf5e8',
-        },
-        // critical — knowledge risk, at-risk signals only
-        signal: {
-          600: '#c2401f',
-          500: '#d84a2b',
-          100: '#f9ded5',
-          50: '#fcefe9',
-        },
-        // muted text
-        slate: {
-          DEFAULT: '#5d7370',
-          light: '#8aa09c',
-        },
-      },
+      // 04 § 1 — two voices. E1 (ratified): the monospace voice is retired;
+      // the body face carries the micro-label instrument.
       fontFamily: {
-        display: ['"Schibsted Grotesk"', 'system-ui', 'sans-serif'],
-        sans: ['"IBM Plex Sans"', 'system-ui', 'sans-serif'],
-        mono: ['"IBM Plex Mono"', 'ui-monospace', 'monospace'],
+        display: [token('font-family-display'), 'system-ui', 'sans-serif'],
+        sans: [token('font-family-body'), 'system-ui', 'sans-serif'],
       },
-      boxShadow: {
-        card: '0 1px 2px rgba(19,31,29,0.05), 0 4px 16px rgba(19,31,29,0.05)',
-        rail: '0 8px 32px rgba(19,31,29,0.10)',
+      letterSpacing: {
+        label: token('font-tracking-label'),
+        display: token('font-tracking-display'),
       },
+      borderWidth: {
+        hairline: token('border-hairline'),
+        focus: token('border-focus'),
+      },
+      ringWidth: { focus: token('border-focus') },
+      maxWidth: { wide: token('breakpoints-wide') },
+      zIndex: {
+        base: token('zIndex-base'),
+        sticky: token('zIndex-sticky'),
+        dropdown: token('zIndex-dropdown'),
+        scrim: token('zIndex-scrim'),
+        dialog: token('zIndex-dialog'),
+        toast: token('zIndex-toast'),
+      },
+      // 08 — the motion vocabulary is closed: 120–200ms, one easing family.
+      transitionDuration: {
+        instant: token('animation-duration-instant'),
+        state: token('animation-duration-state'),
+        enter: token('animation-duration-enter'),
+        room: token('animation-duration-room'),
+      },
+      transitionTimingFunction: { standard: token('animation-easing-standard') },
+      minHeight: { touch: token('touch-minTarget') },
+      minWidth: { touch: token('touch-minTarget') },
     },
   },
   plugins: [],

@@ -20,14 +20,14 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-carbon/40 p-4 pt-[10vh]" role="dialog" aria-modal="true" aria-label="Settings" onClick={onClose}>
-      <div className="card w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-ink/40 p-4 pt-[10vh]" role="dialog" aria-modal="true" aria-label="Settings" onClick={onClose}>
+      <div className="card w-full max-w-md p-6" onClick={(e) => e.stopPropagation()}>
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="font-display text-lg font-bold text-carbon">Settings</h2>
-          <Tag tone={settings.apiKey ? 'pulse' : 'neutral'}>{settings.apiKey ? 'LIVE AI ENABLED' : 'DEMO MODE'}</Tag>
+          <h2 className="font-display text-heading font-heavy text-ink">Settings</h2>
+          <Tag tone={settings.apiKey ? 'ink' : 'neutral'}>{settings.apiKey ? 'LIVE AI ENABLED' : 'DEMO MODE'}</Tag>
         </div>
 
-        <label className="eyebrow mb-1.5 block" htmlFor="api-key">Anthropic API key</label>
+        <label className="eyebrow mb-2 block" htmlFor="api-key">Anthropic API key</label>
         <input
           id="api-key"
           type="password"
@@ -35,40 +35,40 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
           onChange={(e) => setApiKey(e.target.value)}
           placeholder="sk-ant-…"
           autoComplete="off"
-          className="w-full rounded-lg border border-porcelain-300 bg-white px-3 py-2.5 font-mono text-sm focus:border-petrol-500"
+          className="w-full border border-neutral-150 bg-paper px-4 py-2 font-sans text-bodySmall focus:border-ink"
         />
-        <p className="mt-1.5 text-xs leading-relaxed text-slate">
+        <p className="mt-2 text-label text-neutral-700">
           Stored only in this browser (localStorage); calls go directly from your browser to the Claude API.
           Leave empty to use the built-in demo interviewer.
         </p>
 
-        <label className="eyebrow mb-1.5 mt-4 block" htmlFor="model">Interview model</label>
+        <label className="eyebrow mb-2 mt-4 block" htmlFor="model">Interview model</label>
         <select
           id="model"
           value={model}
           onChange={(e) => setModel(e.target.value)}
-          className="w-full rounded-lg border border-porcelain-300 bg-white px-3 py-2.5 text-sm focus:border-petrol-500"
+          className="w-full border border-neutral-150 bg-paper px-4 py-2 text-bodySmall focus:border-ink"
         >
           {MODELS.map((m) => (
             <option key={m.id} value={m.id}>{m.label}</option>
           ))}
         </select>
 
-        <div className="mt-5 flex items-center justify-between gap-3">
+        <div className="mt-6 flex items-center justify-between gap-4">
           {confirmReset ? (
             <button
               onClick={() => { resetAll(); setConfirmReset(false); onClose() }}
-              className="rounded-lg border border-signal-100 bg-signal-50 px-3 py-2 text-xs font-medium text-signal-600"
+              className="border border-error bg-neutral-050 px-4 py-2 text-label font-medium text-error"
             >
               Really clear all interviews? (archived, not destroyed)
             </button>
           ) : (
-            <button onClick={() => setConfirmReset(true)} className="text-xs text-slate underline-offset-2 hover:underline">
+            <button onClick={() => setConfirmReset(true)} className="text-label text-neutral-700 underline-offset-2 hover:underline">
               Clear all interview data
             </button>
           )}
           <div className="flex gap-2">
-            <button onClick={onClose} className="btn-ghost">Cancel</button>
+            <button onClick={onClose} className="btn-secondary">Cancel</button>
             <button onClick={save} className="btn-primary">Save</button>
           </div>
         </div>

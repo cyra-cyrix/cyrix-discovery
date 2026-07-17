@@ -1,15 +1,18 @@
 import { useMemo, useState } from 'react'
-import { DEPARTMENTS, deptById } from '../data/departments'
+import { discoveredDepartments, interviewDeptLabel } from '../org'
 import { useStore } from '../store'
 import type { Horizon, Interview, Opportunity, PainPoint } from '../types'
-import { Card, Stat, Tag, riskTone, severityTone } from '../components/ui'
+import { Card, ProvenanceBadge, Stat, Tag, riskTone, severityTone } from '../components/ui'
+import { cyra } from '../tokens'
 import { OpportunityCard } from './Report'
 
-// Validated categorical trio for horizon identity (dataviz six checks: PASS)
+// 09 — monochrome first: horizons are value steps of ink ordered by
+// importance, not hues. Red is not spent here; on a screen carrying the
+// wordmark the single permitted red is already the wordmark dot (03, P6).
 const HORIZON_COLOR: Record<Horizon, string> = {
-  quick: '#12907f',
-  medium: '#c76e0a',
-  strategic: '#8464e0',
+  quick: cyra.ink,
+  medium: cyra.neutral500,
+  strategic: cyra.neutral300,
 }
 const HORIZON_NAME: Record<Horizon, string> = {
   quick: 'Quick win',
@@ -17,8 +20,8 @@ const HORIZON_NAME: Record<Horizon, string> = {
   strategic: 'Strategic',
 }
 
-export function Dashboard({ onOpenDept }: { onOpenDept: (deptId: string) => void }) {
-  const { interviews } = useStore()
+export function Dashboard({ onOpenPerson }: { onOpenPerson: (personId: string) => void }) {
+  const { interviews, invites, people } = useStore()
   const [query, setQuery] = useState('')
 
   const completed = useMemo(
@@ -29,14 +32,14 @@ export function Dashboard({ onOpenDept }: { onOpenDept: (deptId: string) => void
   const painPoints = useMemo(
     () =>
       completed.flatMap((i) =>
-        (i.report?.painPoints ?? []).map((p) => ({ ...p, departmentId: i.departmentId })),
+        (i.report?.painPoints ?? []).map((p) => ({ ...p, personId: i.personId, label: interviewDeptLabel(i) })),
       ),
     [completed],
   )
   const knowledgeRisks = useMemo(
     () =>
       completed.flatMap((i) =>
-        (i.report?.knowledgeRisks ?? []).map((r) => ({ ...r, departmentId: i.departmentId })),
+        (i.report?.knowledgeRisks ?? []).map((r) => ({ ...r, personId: i.personId, label: interviewDeptLabel(i) })),
       ),
     [completed],
   )
@@ -50,20 +53,20 @@ export function Dashboard({ onOpenDept }: { onOpenDept: (deptId: string) => void
     )
     const pains = painPoints.filter((p) => `${p.text} ${p.category}`.toLowerCase().includes(q))
     const facts = completed.flatMap((i) =>
-      i.facts.filter((f) => f.text.toLowerCase().includes(q)).map((f) => ({ ...f, departmentId: i.departmentId })),
+      i.facts.filter((f) => f.text.toLowerCase().includes(q)).map((f) => ({ ...f, personId: i.personId, label: interviewDeptLabel(i) })),
     )
     return { opps, pains, facts }
   }, [query, opportunities, painPoints, completed])
 
   const inProgress = Object.values(interviews).filter((i) => i.status === 'in_progress' || i.status === 'generating').length
-  const knowledgeCoverage =
-    DEPARTMENTS.reduce((sum, d) => {
-      const cov = interviews[d.id]?.coverage
-      return sum + (cov ? Object.values(cov).reduce((a, b) => a + b, 0) / 10 : 0)
-    }, 0) / DEPARTMENTS.length
+  const openInvites = Object.values(invites).filter((i) => i.status === 'active' && !i.completedAt).length
+  const departments = useMemo(() => discoveredDepartments(interviews), [interviews])
+  const knowledgeCoverage = completed.length
+    ? completed.reduce((sum, i) => sum + Object.values(i.coverage).reduce((a, b) => a + b, 0) / 10, 0) / completed.length
+    : 0
 
   if (completed.length === 0) {
-    return <VisionDashboard inProgress={inProgress} />
+    return <VisionDashboard inProgress={inProgress} invitedCount={openInvites} peopleCount={Object.keys(people).length} />
   }
 
   return (
@@ -72,29 +75,29 @@ export function Dashboard({ onOpenDept }: { onOpenDept: (deptId: string) => void
       <header className="pt-6">
         <p className="eyebrow mb-2">Organizational intelligence</p>
         <div className="flex flex-wrap items-end justify-between gap-4">
-          <h1 className="font-display text-3xl font-bold tracking-tight text-carbon">Discovery dashboard</h1>
+          <h1 className="font-display text-display2 font-heavy tracking-display text-ink">Discovery dashboard</h1>
           <input
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search everything — pain, opportunities, facts…"
-            className="w-full max-w-sm rounded-lg border border-porcelain-300 bg-white px-3 py-2 text-sm placeholder:text-slate-light focus:border-petrol-500"
+            className="w-full max-w-sm border border-neutral-150 bg-paper px-4 py-2 text-bodySmall placeholder:text-neutral-500 focus:border-ink"
             aria-label="Search all discovery data"
           />
         </div>
-        <p className="mt-2 font-mono text-[11px] uppercase tracking-[0.14em] text-slate">
-          {completed.length} of {DEPARTMENTS.length} departments heard · knowledge coverage {Math.round(knowledgeCoverage * 100)}% ·
-          understanding: {understandingStage(completed.length)}
+        <p className="mt-2 font-sans text-label uppercase tracking-label text-neutral-700">
+          {completed.length} {completed.length === 1 ? 'person' : 'people'} heard · {departments.length} {departments.length === 1 ? 'team' : 'teams'} discovered ·
+          knowledge depth {Math.round(knowledgeCoverage * 100)}% · understanding: {understandingStage(completed.length)}
         </p>
       </header>
 
       {searchResults ? (
-        <SearchResults results={searchResults} onOpenDept={onOpenDept} />
+        <SearchResults results={searchResults} onOpenPerson={onOpenPerson} />
       ) : (
         <>
           {/* headline stats */}
-          <section className="card mt-6 grid grid-cols-2 gap-6 p-5 md:grid-cols-4" aria-label="Headline numbers">
-            <Stat label="Departments heard" value={`${completed.length} / ${DEPARTMENTS.length}`} sub="interview completion" />
+          <section className="card mt-6 grid grid-cols-2 gap-6 p-6 md:grid-cols-4" aria-label="Headline numbers">
+            <Stat label="People heard" value={completed.length} sub={`${departments.length} ${departments.length === 1 ? 'team' : 'teams'} discovered`} />
             <Stat label="AI opportunities" value={opportunities.length} sub={`${quickWins.length} deliverable in 30 days`} />
             <Stat label="Pain points mapped" value={painPoints.length} sub={`${painPoints.filter((p) => p.severity === 3).length} severe`} />
             <Stat label="Knowledge risks" value={knowledgeRisks.length} sub={`${knowledgeRisks.filter((r) => r.severity === 'high').length} single-person dependencies`} />
@@ -106,14 +109,17 @@ export function Dashboard({ onOpenDept }: { onOpenDept: (deptId: string) => void
               {completed
                 .filter((i) => i.report)
                 .map((i) => (
-                  <div key={i.departmentId} className="flex flex-col gap-1.5 border-l-2 border-petrol-600 pl-4">
-                    <button
-                      onClick={() => onOpenDept(i.departmentId)}
-                      className="w-fit font-display text-sm font-bold text-carbon hover:text-petrol-700"
-                    >
-                      {deptById(i.departmentId).name} →
-                    </button>
-                    <p className="text-sm leading-relaxed text-carbon">
+                  <div key={i.personId} className="flex flex-col gap-2 border-l-2 border-ink pl-4">
+                    <div className="flex flex-wrap items-center gap-4">
+                      <button
+                        onClick={() => onOpenPerson(i.personId)}
+                        className="w-fit font-display text-bodySmall font-heavy text-ink"
+                      >
+                        {interviewDeptLabel(i)} →
+                      </button>
+                      <ProvenanceBadge />
+                    </div>
+                    <p className="text-bodySmall text-ink">
                       {i.report?.founderBrief ?? i.report?.executiveSummary}
                     </p>
                   </div>
@@ -135,20 +141,20 @@ export function Dashboard({ onOpenDept }: { onOpenDept: (deptId: string) => void
 
           <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
             <Card title="Top pain points across the company">
-              <RankedPain pains={painPoints} onOpenDept={onOpenDept} />
+              <RankedPain pains={painPoints} onOpenPerson={onOpenPerson} />
             </Card>
             <Card title="Knowledge risks">
-              <ul className="space-y-2.5">
+              <ul className="space-y-2">
                 {knowledgeRisks
                   .sort((a, b) => (a.severity === 'high' ? -1 : 1) - (b.severity === 'high' ? -1 : 1))
                   .slice(0, 6)
                   .map((r, i) => (
                     <li key={i} className="flex items-start gap-2">
                       <Tag tone={riskTone(r.severity)}>{r.severity.toUpperCase()}</Tag>
-                      <div className="text-sm text-carbon">
+                      <div className="text-bodySmall text-ink">
                         {r.text}
-                        <button onClick={() => onOpenDept(r.departmentId)} className="ml-1.5 font-mono text-[10px] text-petrol-600 hover:underline">
-                          {deptById(r.departmentId).short.toUpperCase()} →
+                        <button onClick={() => onOpenPerson(r.personId)} className="ml-2 font-sans text-label text-neutral-700 hover:underline">
+                          {r.label.toUpperCase()} →
                         </button>
                       </div>
                     </li>
@@ -159,17 +165,17 @@ export function Dashboard({ onOpenDept }: { onOpenDept: (deptId: string) => void
 
           {/* Quick wins */}
           <Card title="Quick wins — deliverable in 30 days" className="mt-4">
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               {quickWins.slice(0, 6).map((o) => (
-                <button key={o.id} onClick={() => onOpenDept(o.departmentId)} className="text-left">
-                  <div className="rounded-lg border border-porcelain-200 p-3 transition-colors hover:border-petrol-500">
+                <button key={o.id} onClick={() => onOpenPerson(o.personId)} className="text-left">
+                  <div className="border border-neutral-150 p-4 transition-colors hover:border-ink">
                     <div className="flex items-center gap-2">
-                      <Tag tone="pulse">{o.type.toUpperCase()}</Tag>
-                      <span className="font-mono text-[10px] text-slate">{deptById(o.departmentId).short.toUpperCase()}</span>
-                      <span className="ml-auto font-mono text-[10px] text-slate">{o.confidence}%</span>
+                      <Tag tone="ink">{o.type.toUpperCase()}</Tag>
+                      <span className="font-sans text-label text-neutral-700">{interviewDeptLabel(interviews[o.personId]).toUpperCase()}</span>
+                      <span className="ml-auto font-sans text-label text-neutral-700">{o.confidence}%</span>
                     </div>
-                    <div className="mt-1.5 text-sm font-medium text-carbon">{o.title}</div>
-                    <div className="mt-0.5 line-clamp-2 text-xs text-slate">{o.businessValue}</div>
+                    <div className="mt-2 text-bodySmall font-medium text-ink">{o.title}</div>
+                    <div className="mt-px line-clamp-2 text-label text-neutral-700">{o.businessValue}</div>
                   </div>
                 </button>
               ))}
@@ -180,14 +186,14 @@ export function Dashboard({ onOpenDept }: { onOpenDept: (deptId: string) => void
           <Card title="Latest interview insights" className="mt-4">
             <ul className="space-y-2">
               {completed
-                .flatMap((i) => i.facts.slice(-3).map((f) => ({ ...f, departmentId: i.departmentId })))
+                .flatMap((i) => i.facts.slice(-3).map((f) => ({ ...f, personId: i.personId, label: interviewDeptLabel(i) })))
                 .slice(0, 8)
                 .map((f, i) => (
-                  <li key={i} className="flex items-start gap-2 text-sm">
-                    <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-pulse-500" />
-                    <span className="text-carbon">
+                  <li key={i} className="flex items-start gap-2 text-bodySmall">
+                    <span className="mt-2 h-1.5 w-1.5 shrink-0 bg-neutral-500" />
+                    <span className="text-ink">
                       {f.text}
-                      <span className="ml-1.5 font-mono text-[10px] text-slate">{deptById(f.departmentId).short.toUpperCase()}</span>
+                      <span className="ml-2 font-sans text-label text-neutral-700">{f.label.toUpperCase()}</span>
                     </span>
                   </li>
                 ))}
@@ -212,10 +218,13 @@ function understandingStage(completedCount: number): string {
 
 function IntelligenceLayerNote({ className = '' }: { className?: string }) {
   return (
-    <div className={`rounded-xl border-l-4 border-petrol-600 bg-petrol-50 px-5 py-4 ${className}`}>
-      <p className="text-[15px] leading-relaxed text-carbon">
-        CYRIX Discovery is building the organization's intelligence layer — capturing how work happens today
+    <div className={` border-l-4 border-ink bg-neutral-050 px-6 py-4 ${className}`}>
+      <p className="text-body text-ink">
+        CYRA Discovery is building the organization's intelligence layer — capturing how work happens today
         so AI transformation is based on evidence, not assumptions.
+      </p>
+      <p className="mt-4 text-label uppercase tracking-label text-neutral-500">
+        Everything below is drafted from interviews and has not been validated by an expert.
       </p>
     </div>
   )
@@ -266,31 +275,32 @@ const WHY_CARDS = [
   { title: 'Transformation', body: 'Create a long-term AI roadmap based on organizational understanding.' },
 ]
 
-function VisionDashboard({ inProgress }: { inProgress: number }) {
+function VisionDashboard({ inProgress, invitedCount, peopleCount }: { inProgress: number; invitedCount: number; peopleCount: number }) {
   return (
-    <main className="mx-auto max-w-4xl px-5 pb-24 sm:px-6">
+    <main className="mx-auto max-w-4xl px-6 pb-24 sm:px-6">
       <IntelligenceLayerNote className="mt-8" />
 
       {/* Mission */}
       <header className="mx-auto mt-14 max-w-2xl text-center">
-        <p className="eyebrow">Cyrix Discovery</p>
-        <h1 className="mt-3 font-display text-3xl font-bold leading-tight tracking-tight text-carbon sm:text-4xl">
+        <p className="eyebrow">CYRA Discovery</p>
+        <h1 className="mt-4 font-display text-display2 font-heavy leading-tight tracking-display text-ink sm:text-display2">
           Understanding the organization
           <br />
           before transforming it.
         </h1>
-        <p className="mt-5 text-[15px] leading-relaxed text-slate">
-          Our objective is to understand how every department creates value, identify organizational
-          bottlenecks, capture institutional knowledge, and discover measurable AI opportunities.
+        <p className="mt-6 text-body text-neutral-700">
+          Our objective is to understand how every team creates value, identify organizational
+          bottlenecks, capture institutional knowledge, and discover measurable AI opportunities —
+          starting from the people who do the work, not from an org chart.
         </p>
       </header>
 
       {/* Discovery progress — real numbers, honestly zero */}
       <section className="card mt-14 grid grid-cols-2 gap-x-6 gap-y-8 p-6 sm:grid-cols-3 lg:grid-cols-5" aria-label="Discovery progress">
-        <Stat label="Departments interviewed" value="0" />
-        <Stat label="Departments remaining" value={DEPARTMENTS.length} />
+        <Stat label="People interviewed" value="0" />
+        <Stat label="People on the roster" value={peopleCount} />
+        <Stat label="Invitations open" value={invitedCount} />
         <Stat label="Interviews in conversation" value={inProgress} />
-        <Stat label="Knowledge coverage" value="0%" />
         <Stat label="Understanding" value="Beginning" />
       </section>
 
@@ -300,16 +310,16 @@ function VisionDashboard({ inProgress }: { inProgress: number }) {
           title="What this platform will hold"
           sub="Each capability is generated automatically from real interviews — none of it is written by hand."
         />
-        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
           {EXPECTED_OUTCOMES.map((o) => (
-            <div key={o} className="flex items-center gap-3 rounded-xl border border-dashed border-porcelain-300 bg-white/60 px-4 py-3.5">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8aa09c" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0">
+            <div key={o} className="flex items-center gap-4 border border-dashed border-neutral-150 bg-paper/60 px-4 py-4">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={cyra.neutral500} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0">
                 <circle cx="12" cy="12" r="10" />
                 <path d="M8 12.5l2.5 2.5L16 9.5" />
               </svg>
               <div>
-                <div className="text-sm font-medium text-carbon">{o}</div>
-                <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-slate-light">Will be generated automatically</div>
+                <div className="text-bodySmall font-medium text-ink">{o}</div>
+                <div className="font-sans text-label uppercase tracking-label text-neutral-500">Will be generated automatically</div>
               </div>
             </div>
           ))}
@@ -323,23 +333,23 @@ function VisionDashboard({ inProgress }: { inProgress: number }) {
           sub="Every department moves through the same evidence-first path — interviews now, transformation later."
         />
         <ol className="relative mx-auto mt-8 max-w-md">
-          <div className="absolute bottom-3 left-[13px] top-3 w-px bg-porcelain-300" aria-hidden="true" />
+          <div className="absolute bottom-3 left-[13px] top-3 w-px bg-neutral-150" aria-hidden="true" />
           {JOURNEY.map((step, i) => {
             const activeNow = i === 0
             return (
-              <li key={step} className="relative flex items-center gap-4 py-2.5 pl-0">
+              <li key={step} className="relative flex items-center gap-4 py-2 pl-0">
                 <span
-                  className={`z-10 flex h-[27px] w-[27px] shrink-0 items-center justify-center rounded-full border font-mono text-[10px] font-semibold ${
-                    activeNow
-                      ? 'border-petrol-600 bg-petrol-700 text-white'
-                      : 'border-porcelain-300 bg-white text-slate'
-                  }`}
+                  className={`z-10 flex h-[27px] w-[27px] shrink-0 items-center justify-center border font-sans text-label font-medium ${
+ activeNow
+ ? 'border-ink bg-ink text-white'
+ : 'border-neutral-150 bg-paper text-neutral-700'
+ }`}
                 >
                   {String(i + 1).padStart(2, '0')}
                 </span>
-                <span className={`text-sm ${activeNow ? 'font-semibold text-carbon' : 'text-slate'}`}>
+                <span className={`text-bodySmall ${activeNow ? 'font-medium text-ink' : 'text-neutral-700'}`}>
                   {step}
-                  {activeNow && <span className="ml-2 font-mono text-[10px] uppercase tracking-[0.12em] text-petrol-600">← we are here</span>}
+                  {activeNow && <span className="ml-2 font-sans text-label uppercase tracking-label text-neutral-700">← we are here</span>}
                 </span>
               </li>
             )
@@ -353,11 +363,11 @@ function VisionDashboard({ inProgress }: { inProgress: number }) {
           title="What management will receive"
           sub="Delivered continuously as interviews complete — not as a one-time report."
         />
-        <div className="card mt-6 grid grid-cols-1 divide-y divide-porcelain-200 sm:grid-cols-2 sm:divide-y-0">
+        <div className="card mt-6 grid grid-cols-1 divide-y divide-neutral-150 sm:grid-cols-2 sm:divide-y-0">
           {DELIVERABLES.map((d, i) => (
-            <div key={d} className={`flex items-center gap-3 px-5 py-3.5 ${i % 2 === 0 ? 'sm:border-r sm:border-porcelain-200' : ''} ${i >= 2 ? 'sm:border-t sm:border-porcelain-200' : ''}`}>
-              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-petrol-600" />
-              <span className="text-sm text-carbon">{d}</span>
+            <div key={d} className={`flex items-center gap-4 px-6 py-4 ${i % 2 === 0 ? 'sm:border-r sm:border-neutral-150' : ''} ${i >= 2 ? 'sm:border-t sm:border-neutral-150' : ''}`}>
+              <span className="h-1.5 w-1.5 shrink-0 bg-neutral-900" />
+              <span className="text-bodySmall text-ink">{d}</span>
             </div>
           ))}
         </div>
@@ -366,17 +376,17 @@ function VisionDashboard({ inProgress }: { inProgress: number }) {
       {/* Why this matters */}
       <section className="mt-16" aria-label="Why this matters">
         <SectionIntro title="Why this matters" sub="" />
-        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
           {WHY_CARDS.map((c) => (
-            <div key={c.title} className="card p-5">
-              <h3 className="font-display text-[15px] font-bold text-carbon">{c.title}</h3>
-              <p className="mt-1.5 text-sm leading-relaxed text-slate">{c.body}</p>
+            <div key={c.title} className="card p-6">
+              <h3 className="font-display text-body font-heavy text-ink">{c.title}</h3>
+              <p className="mt-2 text-bodySmall text-neutral-700">{c.body}</p>
             </div>
           ))}
         </div>
       </section>
 
-      <p className="mt-16 text-center font-mono text-[11px] uppercase tracking-[0.14em] text-slate-light">
+      <p className="mt-16 text-center font-sans text-label uppercase tracking-label text-neutral-500">
         The platform earns every insight from real interviews
       </p>
     </main>
@@ -386,8 +396,8 @@ function VisionDashboard({ inProgress }: { inProgress: number }) {
 function SectionIntro({ title, sub }: { title: string; sub: string }) {
   return (
     <div className="mx-auto max-w-xl text-center">
-      <h2 className="font-display text-xl font-bold tracking-tight text-carbon">{title}</h2>
-      {sub && <p className="mt-1.5 text-sm leading-relaxed text-slate">{sub}</p>}
+      <h2 className="font-display text-heading font-heavy tracking-display text-ink">{title}</h2>
+      {sub && <p className="mt-2 text-bodySmall text-neutral-700">{sub}</p>}
     </div>
   )
 }
@@ -408,19 +418,19 @@ function PriorityMatrix({ opportunities }: { opportunities: Opportunity[] }) {
     <div className="relative">
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Opportunities plotted by implementation effort (x) and business impact (y)">
         {/* quadrant tints */}
-        <rect x={PAD.l} y={PAD.t} width={midX - PAD.l} height={midY - PAD.t} fill="#eaf4f2" rx="6" />
+        <rect x={PAD.l} y={PAD.t} width={midX - PAD.l} height={midY - PAD.t} fill={cyra.neutral050} rx="6" />
         {/* quadrant labels */}
-        <text x={PAD.l + 8} y={PAD.t + 18} className="fill-petrol-700" fontSize="11" fontFamily="IBM Plex Mono" fontWeight="600">DO FIRST</text>
-        <text x={midX + 8} y={PAD.t + 18} fill="#5d7370" fontSize="11" fontFamily="IBM Plex Mono">BIG BETS</text>
-        <text x={PAD.l + 8} y={H - PAD.b - 8} fill="#5d7370" fontSize="11" fontFamily="IBM Plex Mono">FILL-INS</text>
-        <text x={midX + 8} y={H - PAD.b - 8} fill="#5d7370" fontSize="11" fontFamily="IBM Plex Mono">RECONSIDER</text>
+        <text x={PAD.l + 8} y={PAD.t + 18}  fontSize="11" fontFamily={cyra.fontBody} fontWeight="600">DO FIRST</text>
+        <text x={midX + 8} y={PAD.t + 18} fill={cyra.neutral700} fontSize="11" fontFamily={cyra.fontBody}>BIG BETS</text>
+        <text x={PAD.l + 8} y={H - PAD.b - 8} fill={cyra.neutral700} fontSize="11" fontFamily={cyra.fontBody}>FILL-INS</text>
+        <text x={midX + 8} y={H - PAD.b - 8} fill={cyra.neutral700} fontSize="11" fontFamily={cyra.fontBody}>RECONSIDER</text>
         {/* axes */}
-        <line x1={PAD.l} y1={H - PAD.b} x2={W - PAD.r} y2={H - PAD.b} stroke="#cfd9d6" />
-        <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={H - PAD.b} stroke="#cfd9d6" />
-        <line x1={midX} y1={PAD.t} x2={midX} y2={H - PAD.b} stroke="#e3e9e7" strokeDasharray="4 4" />
-        <line x1={PAD.l} y1={midY} x2={W - PAD.r} y2={midY} stroke="#e3e9e7" strokeDasharray="4 4" />
-        <text x={(PAD.l + W - PAD.r) / 2} y={H - 10} textAnchor="middle" fill="#5d7370" fontSize="11" fontFamily="IBM Plex Mono">EFFORT →</text>
-        <text x={14} y={(PAD.t + H - PAD.b) / 2} textAnchor="middle" fill="#5d7370" fontSize="11" fontFamily="IBM Plex Mono" transform={`rotate(-90 14 ${(PAD.t + H - PAD.b) / 2})`}>IMPACT →</text>
+        <line x1={PAD.l} y1={H - PAD.b} x2={W - PAD.r} y2={H - PAD.b} stroke={cyra.neutral150} />
+        <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={H - PAD.b} stroke={cyra.neutral150} />
+        <line x1={midX} y1={PAD.t} x2={midX} y2={H - PAD.b} stroke={cyra.neutral150} strokeDasharray="4 4" />
+        <line x1={PAD.l} y1={midY} x2={W - PAD.r} y2={midY} stroke={cyra.neutral150} strokeDasharray="4 4" />
+        <text x={(PAD.l + W - PAD.r) / 2} y={H - 10} textAnchor="middle" fill={cyra.neutral700} fontSize="11" fontFamily={cyra.fontBody}>EFFORT →</text>
+        <text x={14} y={(PAD.t + H - PAD.b) / 2} textAnchor="middle" fill={cyra.neutral700} fontSize="11" fontFamily={cyra.fontBody} transform={`rotate(-90 14 ${(PAD.t + H - PAD.b) / 2})`}>IMPACT →</text>
         {/* marks — ≥8px, 2px surface ring for overlap separation */}
         {opportunities.map((o) => (
           <circle
@@ -429,29 +439,29 @@ function PriorityMatrix({ opportunities }: { opportunities: Opportunity[] }) {
             cy={y(o.impact)}
             r={hover?.id === o.id ? 8 : 6}
             fill={HORIZON_COLOR[o.horizon]}
-            stroke="#ffffff"
+            stroke={cyra.paper}
             strokeWidth="2"
-            className="cursor-pointer transition-all"
+            className="cursor-pointer transition-colors"
             onMouseEnter={() => setHover(o)}
             onMouseLeave={() => setHover(null)}
           />
         ))}
       </svg>
       {/* legend */}
-      <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1">
+      <div className="mt-2 flex flex-wrap gap-x-6 gap-y-2">
         {(Object.keys(HORIZON_COLOR) as Horizon[]).map((h) => (
-          <span key={h} className="inline-flex items-center gap-1.5 text-xs text-slate">
-            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: HORIZON_COLOR[h] }} />
+          <span key={h} className="inline-flex items-center gap-2 text-label text-neutral-700">
+            <span className="h-2.5 w-2.5" style={{ backgroundColor: HORIZON_COLOR[h] }} />
             {HORIZON_NAME[h]}
           </span>
         ))}
       </div>
       {/* tooltip */}
       {hover && (
-        <div className="pointer-events-none absolute left-1/2 top-2 z-10 w-64 -translate-x-1/2 rounded-lg border border-porcelain-200 bg-white p-3 shadow-rail">
-          <div className="text-xs font-semibold text-carbon">{hover.title}</div>
-          <div className="mt-0.5 font-mono text-[10px] text-slate">
-            {deptById(hover.departmentId).short.toUpperCase()} · IMPACT {hover.impact}/10 · EFFORT {hover.effort}/10 · {hover.confidence}% CONF
+        <div className="pointer-events-none absolute left-1/2 top-2 z-10 w-64 -translate-x-1/2 border border-neutral-150 bg-paper p-4">
+          <div className="text-label font-medium text-ink">{hover.title}</div>
+          <div className="mt-px font-sans text-label text-neutral-700">
+            IMPACT {hover.impact}/10 · EFFORT {hover.effort}/10 · {hover.confidence}% CONF
           </div>
         </div>
       )}
@@ -467,16 +477,16 @@ function PortfolioBars({ opportunities }: { opportunities: Opportunity[] }) {
   const rows = [...counts.entries()].sort((a, b) => b[1] - a[1])
   const max = Math.max(1, ...rows.map(([, n]) => n))
   return (
-    <div className="space-y-2.5">
+    <div className="space-y-2">
       {rows.map(([type, n]) => (
         <div key={type} className="flex items-center gap-2">
-          <span className="w-40 shrink-0 truncate text-xs text-carbon">{type}</span>
-          <div className="h-4 flex-1 rounded-r bg-transparent">
+          <span className="w-40 shrink-0 truncate text-label text-ink">{type}</span>
+          <div className="h-4 flex-1 bg-transparent">
             <div
-              className="flex h-4 items-center rounded-[4px] bg-petrol-600 pl-1.5"
+              className="flex h-4 items-center -[4px] bg-neutral-900 pl-2"
               style={{ width: `${(n / max) * 100}%`, minWidth: 22 }}
             >
-              <span className="font-mono text-[10px] font-semibold text-white">{n}</span>
+              <span className="font-sans text-label font-medium text-white">{n}</span>
             </div>
           </div>
         </div>
@@ -487,20 +497,20 @@ function PortfolioBars({ opportunities }: { opportunities: Opportunity[] }) {
 
 // ---------- Pain ranking ----------
 
-function RankedPain({ pains, onOpenDept }: {
-  pains: (PainPoint & { departmentId: string })[]
-  onOpenDept: (id: string) => void
+function RankedPain({ pains, onOpenPerson }: {
+  pains: (PainPoint & { personId: string; label: string })[]
+  onOpenPerson: (id: string) => void
 }) {
   const sorted = [...pains].sort((a, b) => b.severity - a.severity).slice(0, 7)
   return (
-    <ul className="space-y-2.5">
+    <ul className="space-y-2">
       {sorted.map((p, i) => (
         <li key={i} className="flex items-start gap-2">
           <Tag tone={severityTone(p.severity)}>{p.category.toUpperCase()}</Tag>
-          <div className="text-sm text-carbon">
+          <div className="text-bodySmall text-ink">
             {p.text}
-            <button onClick={() => onOpenDept(p.departmentId)} className="ml-1.5 font-mono text-[10px] text-petrol-600 hover:underline">
-              {deptById(p.departmentId).short.toUpperCase()} →
+            <button onClick={() => onOpenPerson(p.personId)} className="ml-2 font-sans text-label text-neutral-700 hover:underline">
+              {p.label.toUpperCase()} →
             </button>
           </div>
         </li>
@@ -511,45 +521,45 @@ function RankedPain({ pains, onOpenDept }: {
 
 // ---------- Search ----------
 
-function SearchResults({ results, onOpenDept }: {
+function SearchResults({ results, onOpenPerson }: {
   results: {
     opps: Opportunity[]
-    pains: (PainPoint & { departmentId: string })[]
-    facts: { dimension: string; text: string; departmentId: string }[]
+    pains: (PainPoint & { personId: string; label: string })[]
+    facts: { dimension: string; text: string; label: string }[]
   }
-  onOpenDept: (id: string) => void
+  onOpenPerson: (id: string) => void
 }) {
   const total = results.opps.length + results.pains.length + results.facts.length
   return (
     <section className="mt-6 space-y-4" aria-label="Search results">
-      <p className="font-mono text-xs text-slate">{total} RESULTS</p>
+      <p className="font-sans text-label text-neutral-700">{total} RESULTS</p>
       {results.opps.length > 0 && (
         <Card title="Opportunities">
-          <div className="space-y-3">
+          <div className="space-y-4">
             {results.opps.map((o) => (
-              <OpportunityCard key={o.id} o={o} showDept={deptById(o.departmentId).short} />
+              <OpportunityCard key={o.id} o={o} />
             ))}
           </div>
         </Card>
       )}
       {results.pains.length > 0 && (
         <Card title="Pain points">
-          <RankedPain pains={results.pains} onOpenDept={onOpenDept} />
+          <RankedPain pains={results.pains} onOpenPerson={onOpenPerson} />
         </Card>
       )}
       {results.facts.length > 0 && (
         <Card title="Interview facts">
           <ul className="space-y-2">
             {results.facts.map((f, i) => (
-              <li key={i} className="text-sm text-carbon">
+              <li key={i} className="text-bodySmall text-ink">
                 {f.text}
-                <span className="ml-1.5 font-mono text-[10px] text-slate">{deptById(f.departmentId).short.toUpperCase()}</span>
+                <span className="ml-2 font-sans text-label text-neutral-700">{f.label.toUpperCase()}</span>
               </li>
             ))}
           </ul>
         </Card>
       )}
-      {total === 0 && <p className="text-sm text-slate">Nothing found — try a different term.</p>}
+      {total === 0 && <p className="text-bodySmall text-neutral-700">Nothing found — try a different term.</p>}
     </section>
   )
 }

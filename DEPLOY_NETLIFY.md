@@ -62,9 +62,9 @@ dist
 2. Netlify installs dependencies, runs the build, and publishes `dist/` — usually under a minute.
 3. You get a URL like `https://<random-name>.netlify.app`. Rename it under
    **Site configuration → Site details → Change site name** (e.g. `cyrix-discovery.netlify.app`).
-4. Smoke-test (see checklist in the main README / final verification section):
-   - `/#innovation` → access gate → dashboard
-   - Generate an invite in **Invites**, open it in a private window → participant portal
+4. Smoke-test:
+   - `/#innovation` → access gate → dashboard (the landing page)
+   - **People** → add a person → generate their invite link → open it in a private window → participant portal
    - The bare URL → "This conversation is by invitation."
 
 ## 7. How to update deployments
