@@ -10,7 +10,8 @@
     "prebuild": "npm run tokens",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"tests/**/*.test.mjs\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.1",

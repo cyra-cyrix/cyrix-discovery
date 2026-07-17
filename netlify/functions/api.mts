@@ -198,6 +198,29 @@ export default async (req: Request, context: Context) => {
 
     if (!isAdmin(req)) return json({ error: 'not authorised' }, 401)
 
+    // ---------- Evidence Layer (Milestone 1 — Innovation Team only) ----------
+
+    // GET /api/evidence → envelope summaries; GET /api/evidence/:personId → one
+    // envelope; POST /api/evidence/extract { personId } → (re-)extract in the
+    // background. Envelopes are derived data, so re-extraction is always safe.
+    if (req.method === 'GET' && head === 'evidence') {
+      const { evidenceStore } = await import('./_evidence-store.mts')
+      if (param) return json(await evidenceStore().get(param))
+      return json({ envelopes: await evidenceStore().list() })
+    }
+
+    if (req.method === 'POST' && head === 'evidence' && param === 'extract') {
+      const { personId } = await req.json()
+      if (!personId) return json({ error: 'personId required' }, 400)
+      const origin = new URL(req.url).origin
+      void fetch(`${origin}/.netlify/functions/evidence-background`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ personId }),
+      }).catch(() => { /* surfaced by the absence of an envelope */ })
+      return json({ ok: true, status: 'extracting' })
+    }
+
     // GET /api/state → the whole pilot dataset. Tens of records; one round trip.
     if (req.method === 'GET' && head === 'state') {
       const [people, invites, interviews] = await Promise.all([

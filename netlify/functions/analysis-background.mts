@@ -71,5 +71,16 @@ export default async (req: Request) => {
   if (person && analysis.departmentName && !person.department) {
     await putPerson({ ...person, department: analysis.departmentName })
   }
+
+  // Milestone 1: every completed interview also yields an evidence envelope.
+  // Fire-and-forget — extraction failure never blocks the report, and a missing
+  // envelope is visible (and re-runnable) from the admin evidence routes.
+  const origin = new URL(req.url).origin
+  void fetch(`${origin}/.netlify/functions/evidence-background`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ personId }),
+  }).catch(() => { /* re-runnable via POST /api/evidence/extract */ })
+
   return new Response('ok')
 }
