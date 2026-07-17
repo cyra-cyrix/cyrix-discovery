@@ -77,6 +77,11 @@ export interface ResolvedInvite {
 export const resolveInvite = (token: string) =>
   call<ResolvedInvite>(`invite/${encodeURIComponent(token)}`, { method: 'GET' })
 
+/** M2: the runtime_mode migration stage. Admin-gated — used by internal
+ *  test-runs to pick their engine (participants get theirs from resolveInvite). */
+export const getRuntimeMode = () =>
+  call<{ mode: 'off' | 'shadow' | 'pilot' | 'default' }>('runtime-mode', { method: 'GET' }, true)
+
 export interface CheckpointAck {
   ok?: true
   /** Set when the server deliberately dropped the write: `stale` (a newer

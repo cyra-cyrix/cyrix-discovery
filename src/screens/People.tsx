@@ -215,6 +215,14 @@ export function PeopleScreen({ onOpenPerson }: { onOpenPerson: (personId: string
                           {invite ? 'Generate new link' : 'Generate invite link'}
                         </button>
                       )}
+                      {/* Internal test-run: the engine the runtime_mode stage
+                          selects (Runtime under pilot). Without this door the
+                          internal testing cycle cannot start from the UI. */}
+                      {status !== 'complete' && (
+                        <button onClick={() => onOpenPerson(p.id)} className="btn-secondary !px-4 !py-2 text-label">
+                          {status === 'in_progress' ? 'Continue interview' : 'Interview now'}
+                        </button>
+                      )}
                       <button
                         onClick={() => { setEditing(p); setAdding(false); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
                         className="btn-secondary !px-4 !py-2 text-label"

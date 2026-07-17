@@ -66,6 +66,22 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
   // engine in their own `mode` — this ref is only read at start.
   const engineRef = useRef<'live' | 'runtime'>('live')
 
+  // Internal test-runs have no invitation to resolve, so they consult the
+  // runtime_mode stage directly (they hold the admin bearer). Owner directive:
+  // the Runtime engine is the default for ALL new internal interviews under
+  // pilot — internal runs were previously hardcoded to the legacy engine,
+  // which would have silently defeated the whole internal-testing cycle.
+  useEffect(() => {
+    if (!internal) return
+    let cancelled = false
+    void api.getRuntimeMode()
+      .then((m) => {
+        if (!cancelled && (m.mode === 'pilot' || m.mode === 'default')) engineRef.current = 'runtime'
+      })
+      .catch(() => { /* stay on legacy — never block an internal run on the flag */ })
+    return () => { cancelled = true }
+  }, [internal])
+
   useEffect(() => {
     if (internal || !inviteToken) return
     let cancelled = false
@@ -163,7 +179,7 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
       : person)
 
     const token = internal ? null : inviteToken
-    const engine = internal ? 'live' : engineRef.current
+    const engine = engineRef.current
     const iv = newInterview(id, engine, ctx, token)
     void store.setInterview(id, iv, token)
     setStep('conversation')
