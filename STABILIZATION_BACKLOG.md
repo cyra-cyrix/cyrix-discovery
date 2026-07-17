@@ -8,6 +8,17 @@
 > **BL-1 (a) + (b) FIXED + VERIFIED LOCALLY** — `/api/ai` payload is now `{action, token, model, personId, participant, messages}` (~364 bytes measured vs the whole org dataset); prior findings derive server-side from `allInterviews()` (also closes BL-14); turn call runs `effort:'low'` and checks `stop_reason`.
 > **BL-1 (c) + production acceptance — OWNER ACTIONS, OPEN:** raise the function timeout in Netlify site config; read the `api` function log for one failed invocation (still the root-cause proof); then run one real interview with the API key set and confirm `mode:'live'` on the stored record. Even if a turn still times out, BL-3 now degrades it to a seamless offline turn instead of a dead conversation.
 > Regression state after all three: `npm run typecheck` clean · production build clean · contract suite 18/18 · browser: resume, offline-turn recovery, wire format, full E2E submit all pass. **P1 queue (BL-4…BL-10) not started.**
+>
+> **Second update (experience phase, same day — see `INTERVIEW_EXPERIENCE_REVIEW.md`):**
+> production verification PASSED (resume + continuity confirmed by the owner, no data
+> loss). The experience review then found the invisible-text root cause (dead off-token
+> utility classes under the replaced Tailwind theme — `text-white` rendered participants'
+> own words ink-on-ink) and fixed the whole family across Portal/Dashboard/Graph.
+> **Closed in this phase: BL-8 (dvh), BL-9 (mic-denial feedback), BL-10 (pre-opening
+> state), BL-24, BL-25, BL-26 (focus management), BL-29, BL-30, BL-36.**
+> **Still open: BL-4 (two-tab merge), BL-5 (delete resurrection), BL-6 (re-interview
+> confirm), BL-7 (chat aria-live)** — next in the P1 queue — plus the P2 batch.
+> Conversation-intelligence recommendations (review §6) await joint review.
 Order of execution: P0s one at a time, full regression after each; then P1s; then P2s. Nothing below P2 blocks the pilot.
 Effort scale: S (<1h) · M (1–3h) · L (3h+). Evidence tags: [reproduced] = executed this audit; [code] = traced with file:line.
 

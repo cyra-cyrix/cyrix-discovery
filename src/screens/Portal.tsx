@@ -108,6 +108,26 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
     // the internal test-run.
   }, [restored]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Each step is a conditional swap; without a focus move, keyboard and
+  // screen-reader users are stranded on <body> and never told the screen
+  // changed. Land on the new step's heading (not on initial mount — stealing
+  // focus on arrival is its own anti-pattern).
+  const prevStep = useRef<Step | null>(null)
+  useEffect(() => {
+    if (prevStep.current !== null && prevStep.current !== step) {
+      // The conversation has no heading — the composer is where answering
+      // starts, so focus lands there. Every other step leads with its h1.
+      const target = step === 'conversation'
+        ? document.querySelector<HTMLElement>('textarea[aria-label="Your answer"]')
+        : document.querySelector<HTMLElement>('main h1, main h2')
+      if (target) {
+        if (target.tagName !== 'TEXTAREA') target.setAttribute('tabindex', '-1')
+        target.focus({ preventScroll: false })
+      }
+    }
+    prevStep.current = step
+  }, [step])
+
   const interview = personId ? store.interviews[personId] : undefined
   const knownPerson = invitedPerson ?? (personId ? store.people[personId] : undefined)
 
@@ -372,7 +392,9 @@ function Welcome({ onBegin, resume, onResume }: {
         You're about to have a conversation with an experienced consultant — about your ordinary working day.
         It takes around twenty minutes.
       </p>
-      <ul className="mt-8 space-y-4.5">
+      {/* On-scale spacing only — fractional steps (4.5) don't exist in the
+          replaced scale and silently compile to nothing. */}
+      <ul className="mt-8 space-y-4">
         {[
           'This is not a performance evaluation — nothing here reflects on you or your team.',
           'There are no right or wrong answers. The ordinary, frustrating details are the valuable ones.',
@@ -381,7 +403,7 @@ function Welcome({ onBegin, resume, onResume }: {
           'Every department\'s experience matters. Yours is the only window we have into yours.',
         ].map((t, i) => (
           <li key={i} className="flex items-start gap-4 text-bodySmall text-ink">
-            <span className="mt-[7px] h-1.5 w-1.5 shrink-0 bg-neutral-500" />
+            <span className="mt-[7px] h-2 w-2 shrink-0 bg-neutral-500" />
             {t}
           </li>
         ))}
@@ -428,7 +450,7 @@ function ContextForm({ knownPerson, onSubmit }: {
   return (
     <main className="mx-auto max-w-xl px-6 pb-16 pt-8">
       <p className="eyebrow mb-2">Before we start</p>
-      <h1 className="font-display text-display2 font-heavy tracking-display text-ink">A little context about you</h1>
+      <h1 className="font-display text-display2 font-heavy tracking-display text-ink">A little context about you.</h1>
       <p className="mt-2 text-bodySmall text-neutral-700">
         This helps the conversation start where your work actually is — nothing more.
       </p>
@@ -497,11 +519,11 @@ function ContextForm({ knownPerson, onSubmit }: {
               selected={useVoice}
               onSelect={() => voiceAvailable && setUseVoice(true)}
               title="Speak"
-              desc={voiceAvailable ? 'Talk naturally — your words are transcribed for you to review.' : 'Not supported in this browser — typing is available.'}
+              desc={voiceAvailable ? 'Questions are read aloud, and you can dictate your answers — you review every word before it sends.' : 'Not supported in this browser — typing is available.'}
               disabled={!voiceAvailable}
             />
           </div>
-          <p className="mt-2 text-label text-neutral-500">You can switch between speaking and typing at any point.</p>
+          <p className="mt-2 text-label text-neutral-500">You can type or speak at any point — the microphone sits beside your answer box.</p>
         </div>
 
         <button type="submit" disabled={!ready} className="btn-primary !px-6 !py-4 text-body">
@@ -561,18 +583,32 @@ function Conversation({ interview, personId, voiceMode, onVoiceModeChange, onWra
   const store = useStore()
   const [draft, setDraft] = useState('')
   const [thinking, setThinking] = useState(false)
+  // The indicator names the REAL step (08: no generic "working"): first the
+  // durable write of the participant's answer, then the model's turn.
+  const [turnStage, setTurnStage] = useState<'saving' | 'thinking'>('thinking')
   const [listening, setListening] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const recRef = useRef<any>(null)
   const draftBaseRef = useRef('')
 
   const messages = interview.messages
+  // Until the opening question arrives there is nothing to answer — the
+  // composer waits with the participant instead of accepting words into a void.
+  const awaitingOpening = messages.length === 0
   const answers = messages.filter((m) => m.role === 'user').length
   const avgCoverage = Object.values(interview.coverage).reduce((a, b) => a + b, 0) / 10
   const canWrapUp = answers >= 3
 
+  // First paint of a (possibly long, resumed) transcript lands at the bottom
+  // instantly; only messages appended DURING the session scroll smoothly.
+  // Animating from the top on resume read as jank, not polish.
+  const hasPainted = useRef(false)
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+    scrollRef.current?.scrollTo({
+      top: scrollRef.current.scrollHeight,
+      behavior: hasPainted.current ? 'smooth' : 'auto',
+    })
+    hasPainted.current = true
   }, [messages.length, thinking])
 
   // Speak the consultant's message in voice mode
@@ -613,7 +649,17 @@ function Conversation({ interview, personId, voiceMode, onVoiceModeChange, onWra
       setDraft((draftBaseRef.current + finals + interim).trimStart())
     }
     rec.onend = () => setListening(false)
-    rec.onerror = () => setListening(false)
+    rec.onerror = (e: any) => {
+      setListening(false)
+      // A silent mic failure is indistinguishable from a broken app. Name the
+      // real problem; typing is always available, so no dead-end either way.
+      if (e?.error === 'not-allowed' || e?.error === 'service-not-allowed') {
+        setError('Your browser blocked the microphone. Allow it in your browser settings, or keep typing — both work.')
+      } else if (e?.error === 'audio-capture') {
+        setError('No microphone was found. You can keep typing — everything works the same way.')
+      }
+      // 'no-speech' and 'aborted' are normal pauses — no banner for those.
+    }
     recRef.current = rec
     rec.start()
     setListening(true)
@@ -635,9 +681,12 @@ function Conversation({ interview, personId, voiceMode, onVoiceModeChange, onWra
     // Checkpoint the answer BEFORE asking the AI anything. This ordering is
     // what requirements 4 and 5 turn on: if the turn then fails — a timeout, a
     // 502, a dropped connection — the answer is already durable, and the
-    // error below is honest when it says it is safe.
-    await store.setInterview(personId, withUser, token)
+    // error below is honest when it says it is safe. The staged label tells
+    // the participant the truth about each step as it happens.
     setThinking(true)
+    setTurnStage('saving')
+    await store.setInterview(personId, withUser, token)
+    setTurnStage('thinking')
 
     try {
       if (interview.mode === 'live') {
@@ -688,19 +737,27 @@ function Conversation({ interview, personId, voiceMode, onVoiceModeChange, onWra
   }
 
   return (
-    <main className="mx-auto flex h-[calc(100vh-64px)] max-w-3xl flex-col px-4 pb-4 sm:px-6">
+    // dvh, not vh: on phones 100vh is the LARGEST viewport (URL bar retracted,
+    // no keyboard), so a 100vh column overflows the visible screen — composer
+    // half-hidden, page + rail both scrolling. dvh tracks the real viewport.
+    <main className="mx-auto flex h-[calc(100dvh-64px)] max-w-3xl flex-col px-4 pb-4 sm:px-6">
       <div className="card flex min-h-0 flex-1 flex-col overflow-hidden">
         {/* quiet header: progress only, no internal mechanics */}
         <header className="flex items-center justify-between gap-4 border-b border-neutral-150 px-4 py-2">
           <div className="w-40"><ProgressRule value={coverageDepth(interview.coverage)} /></div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => { if (listening) stopListening(); onVoiceModeChange(!voiceMode) }}
-              className="btn-secondary !px-4 !py-2 text-label"
-              disabled={!voiceMode && speechCtor() === null}
-            >
-              {voiceMode ? 'Switch to typing' : 'Switch to voice'}
-            </button>
+            {/* There is no input "mode" to switch — typing and the mic are both
+                always available in the composer. The one real mode is audio
+                OUTPUT (questions read aloud), so the control says exactly that. */}
+            {'speechSynthesis' in window && (
+              <button
+                onClick={() => onVoiceModeChange(!voiceMode)}
+                className="btn-secondary !px-4 !py-2 text-label"
+                aria-pressed={voiceMode}
+              >
+                {voiceMode ? 'Stop reading' : 'Read aloud'}
+              </button>
+            )}
             <button
               onClick={onWrapUp}
               disabled={!canWrapUp}
@@ -717,18 +774,26 @@ function Conversation({ interview, personId, voiceMode, onVoiceModeChange, onWra
             <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
               <div
                 className={
+                  // `paper` is the only white in the palette. The theme REPLACES
+                  // Tailwind's colors, so the default white utility compiles to
+                  // nothing — which once rendered these words ink-on-ink: invisible.
                   m.role === 'user'
-                    ? 'max-w-[85%]   bg-ink px-4 py-4 text-body  text-white'
-                    : 'max-w-[85%]   border border-neutral-150 bg-neutral-050 px-4 py-4 text-body  text-ink'
+                    ? 'max-w-[85%] bg-ink px-4 py-4 text-body text-paper'
+                    : 'max-w-[85%] border border-neutral-150 bg-neutral-050 px-4 py-4 text-body text-ink'
                 }
               >
                 {m.text}
               </div>
             </div>
           ))}
+          {messages.length === 0 && !thinking && (
+            <div className="max-w-[85%] pt-2">
+              <WorkingRule stage="The consultant is joining" />
+            </div>
+          )}
           {thinking && (
             <div className="max-w-[85%] pt-2">
-              <WorkingRule stage="Reading your answer" />
+              <WorkingRule stage={turnStage === 'saving' ? 'Saving your answer' : 'The consultant is thinking'} />
             </div>
           )}
         </div>
@@ -741,7 +806,10 @@ function Conversation({ interview, personId, voiceMode, onVoiceModeChange, onWra
 
         <footer className="border-t border-neutral-150 p-4">
           <div className="flex items-end gap-2">
-            {voiceMode && (
+            {/* The mic is a composer affordance, not a mode: tap, speak, the
+                words land in the draft for review — typing stays available
+                throughout. Hidden only when the browser can't transcribe. */}
+            {speechCtor() !== null && (
               <button
                 onClick={() => (listening ? stopListening() : startListening())}
                 className={`flex h-[52px] w-[52px] shrink-0 items-center justify-center border transition-colors ${
@@ -770,11 +838,12 @@ function Conversation({ interview, personId, voiceMode, onVoiceModeChange, onWra
                 }
               }}
               rows={2}
-              placeholder={voiceMode ? (listening ? 'Listening — speak naturally…' : 'Tap the mic and speak, or type…') : 'Answer in your own words — specifics beat summaries…'}
+              placeholder={listening ? 'Listening — speak naturally…' : 'Answer in your own words — specifics beat summaries…'}
               className="input min-h-[52px] flex-1 resize-none !py-2"
               aria-label="Your answer"
+              disabled={awaitingOpening}
             />
-            <button onClick={() => void send()} disabled={!draft.trim() || thinking} className="btn-primary !py-4">
+            <button onClick={() => void send()} disabled={!draft.trim() || thinking || awaitingOpening} className="btn-primary !py-4">
               Send
             </button>
           </div>
@@ -826,7 +895,7 @@ function Summary({ interview, onSubmit, onAddition, onBackToConversation, error 
   return (
     <main className="mx-auto max-w-2xl px-6 pb-16 pt-6">
       <p className="eyebrow mb-2">Before anything is submitted</p>
-      <h1 className="font-display text-display2 font-heavy tracking-display text-ink">What I understood</h1>
+      <h1 className="font-display text-display2 font-heavy tracking-display text-ink">What I understood.</h1>
       <p className="mt-2 text-bodySmall text-neutral-700">
         Please look this over. If something is wrong or missing, correct it below — it matters that we got you right.
       </p>
@@ -839,7 +908,7 @@ function Summary({ interview, onSubmit, onAddition, onBackToConversation, error 
               <ul className="space-y-2">
                 {s.items.map((it, i) => (
                   <li key={i} className="flex items-start gap-2 text-bodySmall text-ink">
-                    <span className="mt-[7px] h-1 w-1 shrink-0 bg-neutral-500" />
+                    <span className="mt-[7px] h-2 w-2 shrink-0 bg-neutral-500" />
                     {it}
                   </li>
                 ))}
@@ -873,10 +942,10 @@ function Summary({ interview, onSubmit, onAddition, onBackToConversation, error 
           >
             Add to my record
           </button>
-          <button onClick={onBackToConversation} className="text-bodySmall text-ink underline-offset-2 hover:underline">
+          <button onClick={onBackToConversation} className="btn-tertiary">
             Continue the conversation instead
           </button>
-          {added && <span className="font-sans text-label text-neutral-700">ADDED ✓</span>}
+          {added && <span className="font-sans text-label text-success">Added to your record</span>}
         </div>
       </div>
 

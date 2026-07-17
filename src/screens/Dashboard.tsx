@@ -190,7 +190,7 @@ export function Dashboard({ onOpenPerson }: { onOpenPerson: (personId: string) =
                 .slice(0, 8)
                 .map((f, i) => (
                   <li key={i} className="flex items-start gap-2 text-bodySmall">
-                    <span className="mt-2 h-1.5 w-1.5 shrink-0 bg-neutral-500" />
+                    <span className="mt-2 h-2 w-2 shrink-0 bg-neutral-500" />
                     <span className="text-ink">
                       {f.text}
                       <span className="ml-2 font-sans text-label text-neutral-700">{f.label.toUpperCase()}</span>
@@ -341,7 +341,7 @@ function VisionDashboard({ inProgress, invitedCount, peopleCount }: { inProgress
                 <span
                   className={`z-10 flex h-[27px] w-[27px] shrink-0 items-center justify-center border font-sans text-label font-medium ${
  activeNow
- ? 'border-ink bg-ink text-white'
+ ? 'border-ink bg-ink text-paper'
  : 'border-neutral-150 bg-paper text-neutral-700'
  }`}
                 >
@@ -366,7 +366,7 @@ function VisionDashboard({ inProgress, invitedCount, peopleCount }: { inProgress
         <div className="card mt-6 grid grid-cols-1 divide-y divide-neutral-150 sm:grid-cols-2 sm:divide-y-0">
           {DELIVERABLES.map((d, i) => (
             <div key={d} className={`flex items-center gap-4 px-6 py-4 ${i % 2 === 0 ? 'sm:border-r sm:border-neutral-150' : ''} ${i >= 2 ? 'sm:border-t sm:border-neutral-150' : ''}`}>
-              <span className="h-1.5 w-1.5 shrink-0 bg-neutral-900" />
+              <span className="h-2 w-2 shrink-0 bg-neutral-900" />
               <span className="text-bodySmall text-ink">{d}</span>
             </div>
           ))}
@@ -451,7 +451,7 @@ function PriorityMatrix({ opportunities }: { opportunities: Opportunity[] }) {
       <div className="mt-2 flex flex-wrap gap-x-6 gap-y-2">
         {(Object.keys(HORIZON_COLOR) as Horizon[]).map((h) => (
           <span key={h} className="inline-flex items-center gap-2 text-label text-neutral-700">
-            <span className="h-2.5 w-2.5" style={{ backgroundColor: HORIZON_COLOR[h] }} />
+            <span className="h-2 w-2" style={{ backgroundColor: HORIZON_COLOR[h] }} />
             {HORIZON_NAME[h]}
           </span>
         ))}
@@ -486,7 +486,7 @@ function PortfolioBars({ opportunities }: { opportunities: Opportunity[] }) {
               className="flex h-4 items-center -[4px] bg-neutral-900 pl-2"
               style={{ width: `${(n / max) * 100}%`, minWidth: 22 }}
             >
-              <span className="font-sans text-label font-medium text-white">{n}</span>
+              <span className="font-sans text-label font-medium text-paper">{n}</span>
             </div>
           </div>
         </div>

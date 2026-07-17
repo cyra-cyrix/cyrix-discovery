@@ -171,10 +171,10 @@ export function GraphScreen({ onOpenPerson }: { onOpenPerson: (personId: string)
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-neutral-150 pt-4">
               <div className="flex items-center gap-4 text-label text-neutral-700">
                 <span className="inline-flex items-center gap-2">
-                  <span className="h-3 w-3 border-2 border-ink bg-ink" /> interviewed
+                  <span className="h-4 w-4 border-2 border-ink bg-ink" /> interviewed
                 </span>
                 <span className="inline-flex items-center gap-2">
-                  <span className="h-3 w-3 border-2 border-dashed border-neutral-150 bg-paper" /> mentioned, not yet heard
+                  <span className="h-4 w-4 border-2 border-dashed border-neutral-150 bg-paper" /> mentioned, not yet heard
                 </span>
               </div>
               {focus && (
