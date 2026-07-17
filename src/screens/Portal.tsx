@@ -143,7 +143,7 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
     setStep('conversation')
 
     try {
-      const opening = await liveOpening(store.settings.model, store.interviews, id, ctx, inviteToken)
+      const opening = await liveOpening(store.settings.model, id, ctx, inviteToken)
       void store.updateInterview(id, (p) => ({
         ...p,
         messages: [{ id: nextId(), role: 'ai', text: opening }],
@@ -387,11 +387,18 @@ function Welcome({ onBegin, resume, onResume }: {
         ))}
       </ul>
       <div className="mt-8 flex flex-wrap items-center gap-4">
-        <button onClick={onBegin} className="btn-primary !px-6 !py-4 text-body">
-          I'm ready — let's begin
-        </button>
-        {resume && (
-          <button onClick={onResume} className="btn-secondary">Continue where I left off</button>
+        {/* When an unfinished conversation exists, resuming is the ONLY door.
+            Offering "begin" beside it looked symmetrical but was destructive:
+            the primary button silently checkpointed a fresh interview over the
+            participant's saved answers (BL-2). One state, one action. */}
+        {resume ? (
+          <button onClick={onResume} className="btn-primary !px-6 !py-4 text-body">
+            Continue where I left off
+          </button>
+        ) : (
+          <button onClick={onBegin} className="btn-primary !px-6 !py-4 text-body">
+            I'm ready — let's begin
+          </button>
         )}
       </div>
       <p className="mt-6 text-label text-neutral-500">
@@ -634,7 +641,7 @@ function Conversation({ interview, personId, voiceMode, onVoiceModeChange, onWra
 
     try {
       if (interview.mode === 'live') {
-        const result = await liveTurn(store.settings.model, store.interviews, personId, withUser.messages, interview.participant, interview.inviteToken)
+        const result = await liveTurn(store.settings.model, personId, withUser.messages, interview.participant, interview.inviteToken)
         await store.updateInterview(personId, (p) => ({
           ...p,
           messages: [...p.messages, { id: nextId(), role: 'ai', text: result.reply }],
@@ -652,7 +659,29 @@ function Conversation({ interview, personId, voiceMode, onVoiceModeChange, onWra
         }), token)
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'The connection hiccuped — your answer is safe. Try sending again.')
+      // Two engines, one contract — for TURNS, not just the opening. If the
+      // live engine fails mid-conversation (timeout, truncation, refusal, the
+      // server being down), the offline interviewer takes over silently so the
+      // participant's twenty minutes never dead-end. Their answer is already
+      // checkpointed above, so nothing is at risk either way.
+      if (interview.mode === 'live') {
+        try {
+          const result = simulatedTurn(withUser, text)
+          await store.updateInterview(personId, (p) => ({
+            ...p,
+            mode: 'simulated',
+            messages: [...p.messages, { id: nextId(), role: 'ai', text: result.reply }],
+            facts: [...p.facts, ...result.facts],
+            coverage: result.coverage,
+          }), token)
+        } catch {
+          setError('The connection hiccuped — your answer is safe. Try sending again.')
+        }
+      } else {
+        // Never surface a raw exception string to a participant.
+        void e
+        setError('The connection hiccuped — your answer is safe. Try sending again.')
+      }
     } finally {
       setThinking(false)
     }

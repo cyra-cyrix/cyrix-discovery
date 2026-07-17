@@ -13,6 +13,7 @@ import {
   interviewerSystemPrompt, priorFindingsFor, reportSystemPrompt,
   REPORT_SCHEMA, TURN_SCHEMA,
 } from '../../src/engine/prompts.ts'
+import { allInterviews } from './_store.mts'
 
 const DEFAULT_MODEL = 'claude-opus-4-8'
 
@@ -37,14 +38,21 @@ export interface TurnBody {
   model?: string
   participant: ParticipantContext | null
   personId: string
-  interviews: Record<string, Interview>
   messages?: ChatMessage[]
 }
 
-/** Short calls only — these fit inside the synchronous function budget. */
+/** Short calls only — these fit inside the synchronous function budget.
+ *
+ *  Organizational memory is derived HERE, from storage — the client no longer
+ *  sends its interviews map. That map was (a) multi-megabyte for admin runs,
+ *  re-uploaded every turn, feeding the timeout that produced the 502s;
+ *  (b) empty for participants, so cross-interview memory never worked for the
+ *  people it was designed for; and (c) client-supplied text injected into the
+ *  system prompt — an injection surface. Server storage is the truth. */
 export async function runTurn(body: TurnBody) {
   const model = body.model || DEFAULT_MODEL
-  const system = interviewerSystemPrompt(body.participant, priorFindingsFor(body.interviews ?? {}, body.personId))
+  const interviews = await allInterviews<Interview>()
+  const system = interviewerSystemPrompt(body.participant, priorFindingsFor(interviews, body.personId))
 
   if (body.action === 'opening') {
     const r = await client().messages.create({
@@ -65,13 +73,27 @@ export async function runTurn(body: TurnBody) {
     return { reply: text }
   }
 
+  // effort 'low': a turn is one conversational step that must fit a
+  // synchronous function budget — later turns produce more output (facts
+  // accumulate), which is exactly when the 502s hit. Depth belongs to the
+  // report, which runs in the background with no such budget.
   const r = await client().messages.create({
     model, max_tokens: 2000, system,
     messages: toApiMessages(body.messages ?? []),
-    output_config: { format: { type: 'json_schema', schema: TURN_SCHEMA } },
+    output_config: { effort: 'low', format: { type: 'json_schema', schema: TURN_SCHEMA } },
   })
   guard(r)
-  const parsed = JSON.parse(textOf(r)) as { reply: string; facts: Fact[]; coverage: Coverage }
+  // A truncated structured output is unclosed JSON — catch it as what it IS
+  // (the model ran out of tokens), not as a parser stack trace. The client
+  // treats any turn failure as "fall back to the offline interviewer", so the
+  // message here is for logs, not participants.
+  if (r.stop_reason === 'max_tokens') throw new Error('The turn was cut off at the token limit.')
+  let parsed: { reply: string; facts: Fact[]; coverage: Coverage }
+  try {
+    parsed = JSON.parse(textOf(r)) as { reply: string; facts: Fact[]; coverage: Coverage }
+  } catch {
+    throw new Error('The model returned an unreadable turn.')
+  }
   const coverage: Coverage = { ...emptyCoverage(), ...parsed.coverage }
   for (const k of Object.keys(coverage) as (keyof Coverage)[]) {
     coverage[k] = Math.max(0, Math.min(1, coverage[k]))

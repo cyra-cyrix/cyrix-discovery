@@ -274,6 +274,17 @@ empty against a populated server).
 
 ## 12 · Next recommended steps
 
+> **Update 2026-07-17 (stabilization phase):** a full production quality audit was run — see
+> `PRODUCTION_READINESS_REPORT.md` (findings, evidence) and `STABILIZATION_BACKLOG.md`
+> (fix plans + live status). The three P0s are implemented and locally verified: BL-2
+> (Welcome no longer offers a destructive fresh-start over a resumable interview; server
+> refuses transcript-shrinking checkpoints), BL-3 (turns now fall back to the offline
+> interviewer mid-conversation — the 502 no longer dead-ends anyone), BL-1a/b (`/api/ai`
+> no longer ships the client's interviews map — prior findings derive server-side; turn
+> runs at `effort:'low'`). **Steps 1–2 below remain the owner's** — the log is still the
+> root-cause proof, and the timeout raise + live acceptance test still stand. The changes
+> are in the working tree, NOT yet committed/deployed.
+
 **Do these in order. Step 1 is diagnosis — do not fix before reading the log.**
 
 1. **Read the Netlify function log** (Site → Logs → Functions → `api`), reproduce by starting one

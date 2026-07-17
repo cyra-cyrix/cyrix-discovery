@@ -110,6 +110,13 @@ export default async (req: Request, context: Context) => {
       if (stored && (interview.revision ?? 0) <= (stored.revision ?? 0)) {
         return json({ ok: true, ignored: 'stale', revision: stored.revision ?? 0 })
       }
+      // A conversation only ever grows — messages are append-only in every
+      // legitimate flow (admin resets go through PUT /api/interview, not here).
+      // A checkpoint with FEWER messages than stored is a client starting over
+      // on top of saved answers (BL-2); refuse to let it erase them.
+      if (stored && (interview.messages?.length ?? 0) < (stored.messages?.length ?? 0)) {
+        return json({ ok: true, ignored: 'shrink', revision: stored.revision ?? 0 })
+      }
 
       await putInterview({ ...interview, status: 'in_progress', updatedAt: Date.now() })
       return json({ ok: true, revision: interview.revision ?? 0 })

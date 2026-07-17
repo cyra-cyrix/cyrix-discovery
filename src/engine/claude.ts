@@ -6,8 +6,15 @@
 // longer holds an Anthropic key, which is what lets a participant on their own
 // phone talk to the real interviewer instead of the offline fallback.
 
-import type { ChatMessage, Coverage, Fact, Interview, ParticipantContext } from '../types'
+import type { ChatMessage, Coverage, Fact, ParticipantContext } from '../types'
 import { aiCall } from '../api'
+
+// The request carries ONLY this conversation: personId, participant context,
+// messages. Organizational memory (prior findings from other interviews) is
+// derived server-side from storage — sending the client's interviews map made
+// every turn's payload grow with the whole org's data (the 502 chain), never
+// worked for participants (their map is empty), and let client-supplied text
+// into the system prompt.
 
 export interface TurnResult {
   reply: string
@@ -18,7 +25,6 @@ export interface TurnResult {
 /** One interview turn: full history in, structured {reply, facts, coverage} out. */
 export async function liveTurn(
   model: string,
-  interviews: Record<string, Interview>,
   personId: string,
   messages: ChatMessage[],
   participant: ParticipantContext | null,
@@ -30,7 +36,6 @@ export async function liveTurn(
     model,
     personId,
     participant,
-    interviews,
     messages,
   })
 }
@@ -38,7 +43,6 @@ export async function liveTurn(
 /** Opening question for a live interview. */
 export async function liveOpening(
   model: string,
-  interviews: Record<string, Interview>,
   personId: string,
   participant: ParticipantContext | null,
   inviteToken: string | null,
@@ -49,7 +53,6 @@ export async function liveOpening(
     model,
     personId,
     participant,
-    interviews,
   })
   return reply
 }
