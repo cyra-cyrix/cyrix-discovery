@@ -67,6 +67,9 @@ export interface ResolvedInvite {
    *  is what the portal resumes from. Never present once complete: a finished
    *  interview resolves to `completed` instead. */
   interview?: Interview | null
+  /** M2: which engine a NEW interview on this invitation starts on. In-flight
+   *  interviews keep the engine recorded in their own `mode`. */
+  engine?: 'live' | 'runtime'
 }
 
 /** Resolves an invitation against shared storage — this is what makes a link

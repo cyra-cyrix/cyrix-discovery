@@ -61,6 +61,9 @@ export interface Invite {
   createdAt: number
   status: InviteStatus
   completedAt: number | null
+  /** M2 pilot override: this invitation's interview runs on the runtime engine
+   *  regardless of the global runtime_mode stage (migration plan §2). */
+  engine?: 'runtime'
 }
 
 // ---------- Conversation ----------
@@ -193,7 +196,9 @@ export interface Interview {
   personId: string
   departmentName: string | null // discovered — from context or the analysis
   status: InterviewStatus
-  mode: 'live' | 'simulated'
+  /** 'runtime' = the §-spec engine (M2), feature-flagged; 'live' = legacy
+   *  single-prompt engine; 'simulated' = the offline fallback (never retires). */
+  mode: 'live' | 'simulated' | 'runtime'
   startedAt: number | null
   completedAt: number | null
   inviteToken: string | null
@@ -213,11 +218,15 @@ export interface Interview {
   updatedAt: number
   /** Set only when the report could not be written; see analysis-background. */
   analysisError: string | null
+  /** Runtime-engine blackboard + decision log (additive; absent on legacy
+   *  interviews). Checkpointed with the interview — resume restores the engine
+   *  exactly where it stopped. Shape: src/runtime/state.ts RuntimeState. */
+  runtime?: unknown
 }
 
 export const newInterview = (
   personId: string,
-  mode: 'live' | 'simulated',
+  mode: Interview['mode'],
   participant: ParticipantContext | null = null,
   inviteToken: string | null = null,
 ): Interview => ({

@@ -61,6 +61,10 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
   const [invitedPerson, setInvitedPerson] = useState<Person | null>(null)
   const [restored, setRestored] = useState<Interview | null>(null)
   const restorePlaced = useRef(false)
+  // M2: which engine a NEW interview starts on (server-decided: invite pilot
+  // override or the global runtime_mode stage). In-flight interviews keep the
+  // engine in their own `mode` — this ref is only read at start.
+  const engineRef = useRef<'live' | 'runtime'>('live')
 
   useEffect(() => {
     if (internal || !inviteToken) return
@@ -69,6 +73,7 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
       .then((r) => {
         if (cancelled) return
         setDecision(r.decision)
+        if (r.engine === 'runtime') engineRef.current = 'runtime'
         if (r.person) { setInvitedPerson(r.person); setPersonId(r.person.id) }
         if (r.interview) {
           // The server's copy is already the source of truth — adopt it, don't
@@ -158,11 +163,23 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
       : person)
 
     const token = internal ? null : inviteToken
-    const iv = newInterview(id, 'live', ctx, token)
+    const engine = internal ? 'live' : engineRef.current
+    const iv = newInterview(id, engine, ctx, token)
     void store.setInterview(id, iv, token)
     setStep('conversation')
 
     try {
+      if (engine === 'runtime') {
+        const r = await api.aiCall<{ reply: string; runtime: unknown }>({
+          action: 'runtime-opening', token: inviteToken ?? undefined, personId: id, interview: iv,
+        })
+        void store.updateInterview(id, (p) => ({
+          ...p,
+          runtime: r.runtime,
+          messages: [{ id: nextId(), role: 'ai', text: r.reply }],
+        }), token)
+        return
+      }
       const opening = await liveOpening(store.settings.model, id, ctx, inviteToken)
       void store.updateInterview(id, (p) => ({
         ...p,
@@ -689,7 +706,18 @@ function Conversation({ interview, personId, voiceMode, onVoiceModeChange, onWra
     setTurnStage('thinking')
 
     try {
-      if (interview.mode === 'live') {
+      if (interview.mode === 'runtime') {
+        // The spec engine: perception + deterministic decision server-side.
+        // Same durability ordering, same offline fallback as the live engine.
+        const r = await api.aiCall<{ reply: string; runtime: unknown; closing: boolean }>({
+          action: 'runtime-turn', token: interview.inviteToken ?? undefined, personId, interview: withUser,
+        })
+        await store.updateInterview(personId, (p) => ({
+          ...p,
+          runtime: r.runtime,
+          messages: [...p.messages, { id: nextId(), role: 'ai', text: r.reply }],
+        }), token)
+      } else if (interview.mode === 'live') {
         const result = await liveTurn(store.settings.model, personId, withUser.messages, interview.participant, interview.inviteToken)
         await store.updateInterview(personId, (p) => ({
           ...p,
@@ -708,12 +736,11 @@ function Conversation({ interview, personId, voiceMode, onVoiceModeChange, onWra
         }), token)
       }
     } catch (e) {
-      // Two engines, one contract — for TURNS, not just the opening. If the
-      // live engine fails mid-conversation (timeout, truncation, refusal, the
-      // server being down), the offline interviewer takes over silently so the
-      // participant's twenty minutes never dead-end. Their answer is already
-      // checkpointed above, so nothing is at risk either way.
-      if (interview.mode === 'live') {
+      // Engines fall DOWN, never up: live OR runtime failure degrades to the
+      // offline interviewer silently (rollback tier 2), so the participant's
+      // twenty minutes never dead-end. Their answer is already checkpointed
+      // above, so nothing is at risk either way.
+      if (interview.mode !== 'simulated') {
         try {
           const result = simulatedTurn(withUser, text)
           await store.updateInterview(personId, (p) => ({

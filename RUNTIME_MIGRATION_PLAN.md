@@ -1,6 +1,6 @@
 # Runtime Migration Plan — Milestone 2
 
-**Date:** 2026-07-17 · Status: **awaiting approval — no implementation begun.**
+**Date:** 2026-07-17 · Status: **APPROVED with three owner adjustments (applied below in §5/§6): live-shadow gate raised 5 → 20 interviews; side-by-side evidence comparison gate added (runtime must equal or beat legacy on the same transcripts); successful rollback exercise added as a mandatory legacy-retirement criterion.**
 Governs how `CYRA_INTERVIEW_ENGINE_RUNTIME.md` becomes the live interviewer without ever betting a participant's twenty minutes on unproven code. Binds to the M0 decisions (feature flag, parallel running, legacy as fallback, transcript-validated rollout).
 
 ---
@@ -46,7 +46,8 @@ Data safety: the `runtime` field is additive; evidence envelopes are derived and
 
 1. **Replay corpus clean:** I1–I12 hold on every turn of every stored transcript; zero violations; DECISION byte-deterministic across repeated runs.
 2. **Latency proven:** PERCEIVE + REALIZE p95 comfortably inside the synchronous function budget, measured in live shadow — before any participant waits on it.
-3. **Live shadow clean** on at least **5** production interviews (count adjustable by you): zero invariant violations, sane move traces on review.
+3. **Live shadow clean** on at least **20** production interviews (owner-set): zero invariant violations, sane move traces on review.
+3a. **Side-by-side evidence comparison (owner adjustment 2):** for the same transcripts, the runtime's evidence output is compared item-by-item against the legacy path's (M1 retrofit extraction). Judged on anchor fidelity, register discipline, pointer capture, contradiction detection, and yield. **Runtime must be equal or better before promotion**; the comparison report is a review artifact, not a self-assessment.
 4. **One full internal test-run interview** end-to-end on the runtime engine: FRAMING → acknowledgment → ORIENTING → topic lifecycle with anchor-before-deepen → member check → capture-miss → pointer capture → SAFE_CLOSE → §14.4 envelope lands in the evidence store.
 5. **One authenticated production pilot interview** completed on the runtime engine, `mode: 'runtime'` on the stored record (administrator-run — same credential boundary as M1's outstanding check).
 6. **Fallback drill passed:** forced PERCEIVE failure mid-interview degrades to the offline engine with no participant-visible error (browser-verified, as BL-3 was).
@@ -60,7 +61,8 @@ Data safety: the `runtime` field is additive; evidence envelopes are derived and
   1. All §5 acceptance criteria met and `runtime_mode: default` in production.
   2. ≥ **20** production interviews completed on the runtime engine (≈ pilot scale; adjustable) with zero engine-attributable P0/P1 defects.
   3. No in-flight interviews remain on `mode: 'live'`.
-  4. Your written sign-off.
+  4. **A successful rollback exercise (owner adjustment 3):** `runtime_mode` deliberately stepped back from `default` in production, a new interview confirmed to start on the legacy engine cleanly, then restored — proving the escape hatch works *before* the hatch's target is removed.
+  5. Your written sign-off.
 - Retirement is its own commit with the full regression gate: remove the legacy turn path and the §15-violating priors injection; the report/analysis prompt is untouched (it belongs to M3+'s diagnosis modules, not this migration).
 
 ---

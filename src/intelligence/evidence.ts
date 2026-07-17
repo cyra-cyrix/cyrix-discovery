@@ -100,7 +100,7 @@ export interface ContradictionFlag {
  *  from the transcript is always safe; the transcript remains the source of truth. */
 export interface EvidenceEnvelope {
   interview_id: string
-  extractor: 'model' | 'heuristic'
+  extractor: 'model' | 'heuristic' | 'runtime'
   extractor_version: string
   source_revision: number // interview.revision the extraction was computed from
   extracted_at: number

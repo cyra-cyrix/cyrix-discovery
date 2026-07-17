@@ -72,7 +72,13 @@ export default async (req: Request, context: Context) => {
         getInterview(invite.personId) as Promise<Interview | null>,
       ])
       if (interview?.status === 'complete') return json({ decision: 'completed' })
-      return json({ decision: 'accept', person, invite, interview })
+      // Engine selection (M2 plan §2): per-invite pilot override, else the
+      // global stage. Only NEW interviews consume this — an in-flight
+      // interview keeps the engine recorded in its own `mode`.
+      const { getRuntimeMode } = await import('./_config.mts')
+      const mode = await getRuntimeMode()
+      const engine = (invite as { engine?: string }).engine === 'runtime' || mode === 'default' ? 'runtime' : 'live'
+      return json({ decision: 'accept', person, invite, interview, engine })
     }
 
     // POST /api/checkpoint { token, interview } → durably store an interview
@@ -190,8 +196,26 @@ export default async (req: Request, context: Context) => {
       const body = await req.json()
       const authorised = isAdmin(req) || Boolean(await resolveInvite(body.token))
       if (!authorised) return json({ error: 'not authorised' }, 403)
+      // M2: the runtime engine's turns share this route and auth; the engine
+      // itself is selected at interview start (invite.engine / runtime_mode).
+      if (body.action === 'runtime-opening' || body.action === 'runtime-turn') {
+        const { runtimeTurn } = await import('./_runtime.mts')
+        return json(await runtimeTurn(body))
+      }
       const { runTurn } = await import('./_ai.mts')
       return json(await runTurn(body))
+    }
+
+    // GET /api/runtime-mode → the current migration stage (admin);
+    // PUT { mode } → change it instantly, no deploy (rollback tier 1).
+    if (head === 'runtime-mode') {
+      if (!isAdmin(req)) return json({ error: 'not authorised' }, 401)
+      const cfg = await import('./_config.mts')
+      if (req.method === 'GET') return json({ mode: await cfg.getRuntimeMode() })
+      if (req.method === 'PUT') {
+        const { mode } = await req.json()
+        return json({ mode: await cfg.setRuntimeMode(mode) })
+      }
     }
 
     // ---------- Innovation Team routes (server-verified bearer) ----------

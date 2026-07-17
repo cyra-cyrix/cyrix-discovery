@@ -37,6 +37,11 @@ Inputs only you can supply. Nothing in M1+ starts cleanly without them.
 **Testable:** every completed interview yields evidence items, each resolvable to its transcript span; single-source ceiling enforced; adapter output for historical interviews spot-checked; J-invariant test harness bootstrapped (first tests: anchors resolve, ceilings hold).
 **Effort:** M–L.
 
+> **M2 STATUS: core implemented & verified locally; staged rollout per approved migration plan.**
+> Built: §1 blackboard + §4 FlagSet (`src/runtime/state.ts`) · the PURE decision core §5–§10/§13–§15 (`decision.ts` — trust/topic/lifecycle machines, one-move dispatcher, probe library, priors-safe topic seeds with no AI-hunting topic) · §17 constants as config (PARKED preserved) · PERCEIVE/REALIZE contracts (only two model calls, effort:low, bounded) · server turn handler reusing M1's deterministic §11/§12 extraction (evidence born live, envelope per turn) · `runtime_mode` flag off/shadow/pilot/default in a config blob (instant change, no deploy) + per-invite pilot override · engine selection at interview start; in-flight interviews never switch upward · client falls DOWN to the offline engine on any runtime failure.
+> Verified: 26/26 invariant+determinism tests · replay harness (fixture tier): 19 interviews / 94 turns / 0 violations / determinism held · fallback drill passed in the browser (runtime failure → seamless simulated continuation, mode recorded) · durability contract 18/18 · typecheck/build clean.
+> Remaining before promotion (per plan gates, owner-dependent): true-PERCEIVE replay + live shadow ×20 (needs ANTHROPIC_API_KEY environments), side-by-side evidence comparison, latency measurement, internal + production pilot interviews, rollback exercise. runtime_mode ships `off`.
+
 ## Milestone 2 — Interview Engine Runtime (the specified engine, built as a third engine)
 
 **Why here:** M1 defines the EvidenceItem object model; this milestone builds its **native producer** — the perception/decision-split engine the Runtime spec specifies. It also permanently answers the standing conversation-quality concerns (the spec formalizes every recommendation from `INTERVIEW_EXPERIENCE_REVIEW.md` §6, which is hereby superseded).
