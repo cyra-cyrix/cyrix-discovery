@@ -23,7 +23,11 @@ Inputs only you can supply. Nothing in M1+ starts cleanly without them.
 
 > **M0 CLOSED (owner decisions, 2026-07-17):** four governing documents declared (Constitution and Methodology files still to be supplied — flagged; the two available specs carry M1); Netlify confirmed, Lovable historical; **Supabase approved behind a storage abstraction** (M1 ships the abstraction + Blobs driver; the Supabase driver drops in when a project + credentials exist); reviewer identity via existing auth; strategic importance stays UNASSESSED absent strategy config; Runtime engine will be feature-flagged with the existing engine as fallback until production confidence.
 >
-> **M1 STATUS: implemented & verified locally** — `src/intelligence/{evidence,extraction}.ts` (deterministic §11/§12 core + perception contract), `_evidence-store.mts` (the storage abstraction), `evidence-background.mts` (model perception w/ heuristic fallback — two extractors, one contract), auto-trigger after analysis, admin routes (`GET /api/evidence[/:id]`, `POST /api/evidence/extract` for backfill). Test harness bootstrapped: 11 invariant tests (ceiling, determinism, verbatim anchors, MIXED split, forbidden extractions, pointer routing) + the 18-check durability contract, all green. E2E: submit → analysis → envelope with registered/capped/anchored items, pointers, gap register.
+> **M1 STATUS: Implemented · Tested · Deployed · PARTIALLY production verified.**
+> Outstanding for full production verification: one authenticated extraction on
+> production by an administrator (`POST /api/evidence/extract` with a completed
+> interview's personId, then GET the envelope) — requires the production
+> `ADMIN_TOKEN`, which this environment does not hold. Detail — `src/intelligence/{evidence,extraction}.ts` (deterministic §11/§12 core + perception contract), `_evidence-store.mts` (the storage abstraction), `evidence-background.mts` (model perception w/ heuristic fallback — two extractors, one contract), auto-trigger after analysis, admin routes (`GET /api/evidence[/:id]`, `POST /api/evidence/extract` for backfill). Test harness bootstrapped: 11 invariant tests (ceiling, determinism, verbatim anchors, MIXED split, forbidden extractions, pointer routing) + the 18-check durability contract, all green. E2E: submit → analysis → envelope with registered/capped/anchored items, pointers, gap register.
 
 ## Milestone 1 — Evidence Layer
 
