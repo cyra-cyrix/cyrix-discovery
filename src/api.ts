@@ -62,12 +62,34 @@ export interface ResolvedInvite {
   decision: InviteDecision
   person?: Person
   invite?: Invite
+  /** An interview already underway for this invitation, if any. Present
+   *  whenever the decision is `accept` and the participant has started — this
+   *  is what the portal resumes from. Never present once complete: a finished
+   *  interview resolves to `completed` instead. */
+  interview?: Interview | null
 }
 
 /** Resolves an invitation against shared storage — this is what makes a link
- *  work on a device that has never seen the roster. */
+ *  work on a device that has never seen the roster, and what makes it resume. */
 export const resolveInvite = (token: string) =>
   call<ResolvedInvite>(`invite/${encodeURIComponent(token)}`, { method: 'GET' })
+
+export interface CheckpointAck {
+  ok?: true
+  /** Set when the server deliberately dropped the write: `stale` (a newer
+   *  revision is already stored) or `generating` (the conversation is over).
+   *  Both mean "stop retrying" — neither is a failure. */
+  ignored?: 'stale' | 'generating'
+  revision?: number
+}
+
+/** Persist an in-flight interview. Authorised by the participant's invitation,
+ *  or by the admin bearer for an internal test-run (no token). */
+export const checkpointInterview = (token: string | null, interview: Interview) =>
+  call<CheckpointAck>('checkpoint', {
+    method: 'POST',
+    body: JSON.stringify({ token: token ?? '', interview }),
+  }, !token)
 
 export const submitInterview = (token: string, interview: Interview, person: Person | null) =>
   call<{ ok: true; status: string }>('submit', {

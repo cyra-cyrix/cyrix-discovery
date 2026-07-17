@@ -80,8 +80,13 @@ cyra-tokens.json → scripts/build-tokens.mjs → src/tokens.css   (generated; p
 - The deployed bundle hash matched the local build at each push, so **HEAD (`be33096`) is live**.
 - Connected via Netlify's GitHub App (not a repo webhook — `/hooks` is empty and
   `/deployments` returns 0; **this is normal and is not evidence of disconnection**).
-- **I have no Netlify CLI or token.** I cannot read deploy logs, function logs, or env vars.
-  Anything requiring those is listed in §12 as work for the platform owner.
+- ⚠️ **Correction (2026-07-17): `netlify-cli` IS available** — it is in `devDependencies`, at
+  `node_modules/.bin/netlify`. It is simply not on `PATH`, which is why a bare `which netlify`
+  reports nothing and an earlier session concluded it was absent. Use `npx netlify …`.
+  `npx netlify dev` runs the real functions + Blobs locally and was used to verify the
+  checkpointing work end to end. Reading **production** logs additionally needs
+  `npx netlify link` + an authenticated account, which I still do not have — but
+  `npx netlify logs:function api` is the command to reach for once linked.
 
 ---
 
@@ -192,19 +197,33 @@ That narrows it sharply.
 
 ## 9 · Suspected causes — ranked
 
-**H1 — `POST /api/ai` exceeds the 10s function timeout. (High confidence.)**
-Opus 4.8 with a large system prompt, structured output and adaptive thinking routinely takes
-well over 10s for a turn. Lambda answers a timeout with **502** — matching the report exactly.
-This is the only *slow synchronous* path, it requires `ANTHROPIC_API_KEY` (so it only appears once
-the owner set the env vars), and it is the first thing a participant hits when they answer.
-*Discriminator:* Netlify **Functions log** for `api` will read `Task timed out after 10.00 seconds`.
+**H1 — `POST /api/ai` exceeds the function timeout. (High confidence — but this entry's
+original reasoning was wrong; corrected 2026-07-17.)**
+The conclusion stands: it is the only *slow synchronous* path, it requires `ANTHROPIC_API_KEY`
+(so it appears only once the owner set the env vars), and Lambda answers a timeout with **502**.
 
-**H2 — Dynamic `await import('./_ai.mts')` fails to resolve in the bundle. (Low–medium.)**
-Underscore files aren't function endpoints; static imports demonstrably bundle (evidence 4), and
-esbuild handles a literal dynamic import — but the *dynamic* path is untested in production. A
-module-resolution crash returns no response → 502.
-*Discriminator:* log shows `Cannot find module './_ai.mts'` rather than a timeout.
-*Cheap de-risk:* make it a static top-level import.
+Two corrections to what this section used to claim:
+- **Not "adaptive thinking".** `_ai.mts` passes **no** `thinking` parameter, and on Opus 4.8
+  omitting it means the model runs *without* thinking. Thinking is not the cause.
+- **Not 10 seconds.** The owner's observability reports a duration of **≈30.7s**. Whatever
+  limit is in effect it is not the 10s default assumed in §4/§8 — do **not** go into the log
+  looking for `Task timed out after 10.00 seconds`; read the duration it actually reports.
+
+*Better-grounded mechanism (still unproven):* the turn call is **non-streaming** with
+`max_tokens: 2000`, a `json_schema` structured output, and effort defaulting to `high`. The
+report path already uses `.stream()`; the turn path does not. Anthropic's guidance is to stream
+anything with long output or high `max_tokens` precisely to avoid request timeouts. Onset fits:
+each turn returns `reply` + `facts[]` + `coverage`, so **output** grows as the conversation
+accumulates facts, approaching the 2000-token cap — early turns pass, later turns cross the
+budget. A second candidate the log would also distinguish: the SDK retries 429/529 twice by
+default with backoff, which can stack to ~30s of wall clock.
+*Discriminator:* the Netlify Functions log for `api` on a failed invocation.
+
+**H2 — Dynamic `await import('./_ai.mts')` fails to resolve in the bundle. ~~(Low–medium.)~~
+RULED OUT 2026-07-17.** The owner reports interviews start and Claude asks *several questions*
+before the 502. Every one of those turns — including the opening — goes through the same
+`await import('./_ai.mts')` in `api.mts`. If the module could not resolve, turn one would fail.
+It resolved repeatedly. This is settled by observed behaviour, not reasoning.
 
 **H3 — Payload/`@anthropic-ai/sdk` cold-start cost. (Low.)**
 The SDK bundled into `api` inflates cold start; a cold start plus an Opus turn makes H1 worse
@@ -240,14 +259,16 @@ empty against a populated server).
 
 | # | Issue | Severity |
 |---|---|---|
-| 1 | **The 502 (§7).** Blocks live interviews — the offline engine masks it, so reports would silently read generically. | **Blocker** |
-| 2 | **The live Claude path has never been executed** — no API key in any of my environments. Turn latency, report quality and cost are all unmeasured. | **High** |
+| 1 | **The 502 (§7).** Root cause still **unproven** — needs the function log. Now *survivable*: checkpointing (§13) means a participant keeps every answered turn and can resume, so it degrades a lost interview into a stalled turn. That is containment, **not a fix**. | **Blocker** |
+| 2 | **The live Claude path has never been executed** — no API key in any of my environments. Turn latency, report quality and cost are all unmeasured. The durability work was verified against the **offline** engine (which is the honest test for durability, but says nothing about turn latency). | **High** |
 | 3 | "Send invitation" **sends no email** — it creates the invite and copies the link. Overstates the action; CYRA 11 §3 says buttons state exactly what happens. Fix by wiring email or relabelling "Create invitation". | Medium |
 | 4 | **Design compliance Phases 4–8 outstanding** — H3 (chat bubbles vs document), H4 (chromatic charts), H5 (part), M1–M3, M7–M9. See `DESIGN_COMPLIANCE_REPORT.md` §5. | Medium |
 | 5 | **C5 not fully closed** — machine output is labelled `DRAFT — UNVALIDATED`, but there is **no expert review gate**. The platform's core law ("nothing becomes knowledge until an expert approves it") needs a workflow = a feature decision (E6). | Medium |
-| 6 | An invitation is **single-use**; a participant who abandons mid-conversation needs a regenerated link (their transcript lives only in their browser until submit). | Low |
+| 6 | ~~An invitation is single-use; a participant who abandons mid-conversation needs a regenerated link.~~ **CLOSED 2026-07-17** by §13 — the link resumes, and the transcript is server-side from the first turn. | ~~Low~~ |
 | 7 | Open DS decisions **E4** (nav: rail vs tabs) and **E5** (ratify Graph/Founder Brief/Opportunity Card as reference implementations) remain unratified. | Low |
 | 8 | `cyrix2026` in git history on a public repo (inert). | Low |
+| 9 | **No retry path for `analysis_failed`.** The state is now real, resumable and surfaced to the participant ("submit again"), but the Innovation Team has no one-click re-run of the analysis for one. | Medium |
+| 10 | **Blobs writes are not atomic.** `_store.mts` is read-then-`setJSON` with no compare-and-swap. The `revision` guard makes the checkpoint path safe against stale retries, but two *simultaneous* writers at the same revision could still interleave. Not reachable in the pilot (one participant, one device, one interview); revisit before any concurrent-editor feature. | Low |
 
 ---
 
@@ -285,11 +306,57 @@ empty against a populated server).
 6. Only after the pilot is proven: issue #3 (email vs relabel), then Design Phases 4–8 (#4),
    then the review gate (#5).
 
+---
+
+## 13 · Interview durability — checkpointing & resume (added 2026-07-17) — **verified**
+
+A product requirement, not an enhancement: the interview must survive a refresh, a closed
+browser, a network failure and an AI failure.
+
+**What was actually broken.** Not a durability *gap* — there was no persistence at all.
+`store.setInterview` / `updateInterview` only ever touched React state (both were `async`,
+returning promises that had written nothing), so a participant's conversation lived in browser
+memory until submit. `PUT /api/interview` sits below the `isAdmin` gate, so no participant-side
+write path existed to call. §6's old claim that mutations "write through to the server" was true
+of people and invites, never of interviews.
+
+**The design.** Two tiers, in this order, on every mutation:
+1. **Outbox** (`cyra-checkpoint-outbox`, localStorage) — written **first**, so a turn survives a
+   tab that dies before the request completes. Cleared on ack. See the CLAUDE.md amendment.
+2. **`POST /api/checkpoint`** — participant-authenticated by the invitation token (or admin
+   bearer for the internal test-run), same shape as `/api/submit`.
+
+Each checkpoint is a **full snapshot**, so only the newest per person matters — the outbox is a
+map keyed by personId, not a queue. No ordering to get wrong, no partial replay.
+A monotonic `revision` on `Interview` is enforced server-side; `sendBeacon` on `pagehide` gives
+a closing tab one more chance.
+
+**Verified against real functions + Blobs (`npx netlify dev`), not reasoned about:**
+- 16/16 on a contract script covering all seven requirements incl. stale-replay and cross-person
+  authz (`scratchpad/verify-checkpoint.mjs`).
+- Full UI walkthrough: two turns → server holds revision 6 / 5 messages mid-conversation →
+  hard reload → "Continue where I left off" → complete transcript restored.
+- **Offline test:** `fetch` to `/api/checkpoint` forced to reject → answer sent → server stranded
+  at rev 6/5 msgs while the outbox held rev 8/7 msgs → network restored → retry landed the
+  answer unprompted → outbox drained to `null`.
+- `npm run typecheck` clean; no console errors.
+
+**Not verified:** the live Claude path (no API key locally — the walkthrough ran on the offline
+engine, see §11 #2), and production behaviour.
+
+> **Local gotcha:** `netlify dev` re-probes a **403** against a `.html` static fallback, which
+> re-enters the router as `head='checkpoint.html'`, matches nothing, and falls through to the
+> admin gate — so the client sees **401** locally where production returns 403 (the function log
+> shows the true 403; §7's live probes confirm production is correct). Don't chase this as a bug.
+
 ### Quick commands
 
 ```bash
 npm run typecheck        # the ONLY real type check — build does not type-check
 npm run build
-netlify dev              # port 8888; real functions + Blobs. needs .env
+npx netlify dev          # port 8888; real functions + Blobs. needs .env. NOTE: npx —
+                         # netlify-cli is a devDependency, not on PATH (§3)
+npx netlify link         # needed once before production logs are reachable
+npx netlify logs:function api        # the §12 step-1 log; needs `link` + an account
 curl -s https://cyrix-discovery.netlify.app/api/invite/zzzznotatoken   # → {"decision":"unknown"} = backend healthy
 ```

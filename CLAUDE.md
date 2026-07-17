@@ -46,10 +46,47 @@ appears on the Innovation Team's dashboard.
   keeps the same context API (`upsertPerson`, `upsertInvite`, `setInterview`…) but writes
   through to the server; mutations are async and a failed write surfaces rather than
   silently diverging. The dashboard polls every 15s while visible.
-- **Only `settings` stays local** (a per-operator UI preference). No domain data in
-  localStorage; the admin token is the sole other local value.
+- **`settings` stays local** (a per-operator UI preference); the admin token is the only
+  other standing local value.
+- **Amendment (2026-07-17) — the checkpoint outbox.** The former rule was an absolute
+  "no domain data in localStorage". It is now: *no domain data at rest in localStorage.*
+  `cyra-checkpoint-outbox` holds interview snapshots that the server has **not yet
+  acknowledged**, and is cleared the moment it does. Why the rule had to give: a
+  server-only checkpoint cannot satisfy "network failures never lose completed answers"
+  — a participant who goes offline and closes the tab would lose the turn they already
+  answered. The buffer is a write-ahead log, not a store; nothing reads it as a source
+  of truth, and `refresh()`/resume always read the server.
 - **Swapping the datastore** (e.g. to Supabase, 13 § build reality) touches `_store.mts`
   and `src/api.ts` only — no domain type moves.
+
+### Interview durability (platform requirement, not an enhancement)
+
+Interviews are checkpointed. This is load-bearing — the conversation is the product, and
+a participant's twenty minutes must survive a refresh, a closed browser, a dropped
+network, and a failed AI turn.
+
+- **Every mutation goes through `store.setInterview` / `updateInterview`**, which stamp a
+  monotonic `revision`, buffer to the outbox, then `POST /api/checkpoint`. Both are now
+  genuinely async — *before this, they only touched React state and the interview lived
+  in browser memory until submit.* Do not reintroduce a memory-only write path.
+- **Order is the guarantee.** `Portal`'s `send()` **awaits** the checkpoint of the
+  participant's answer *before* calling the AI. If the turn then fails, the answer is
+  already durable — which is what makes the on-screen "your answer is safe" true rather
+  than aspirational.
+- **`revision` is monotonic and the server enforces it.** A checkpoint whose revision
+  does not exceed the stored one is ignored (`{ok, ignored:'stale'}`). Without this, a
+  retry delayed behind a newer turn would silently clobber it. Never write an interview
+  without bumping `revision`.
+- **Only `complete` is immutable.** `GET /api/invite/:token` returns `completed` (and
+  withholds the interview) *only* when `interview.status === 'complete'`; a checkpoint
+  against one is refused with 409. `invite.completedAt` marks that the link was **used**
+  and is what the dashboard counts open invites with — it is deliberately **not** the
+  immutability test. Keying immutability on it locked people out of their own
+  unfinished interviews.
+- **`analysis_failed` is resumable, not terminal.** The transcript survived; only the
+  report failed. It resolves to `accept`, returns the transcript, and can be resubmitted.
+- **An invitation is a way back in, not a one-shot.** Resume is no longer gated to the
+  internal test-run; a participant reopening their own link lands on their transcript.
 
 **Auth is real now.** `ADMIN_TOKEN` and `ANTHROPIC_API_KEY` are Netlify env vars.
 The Innovation Team's token is verified **server-side** — the old bundled `ACCESS_CODE`
@@ -65,6 +102,7 @@ Anthropic key never reaches a browser (which is why the client bundle dropped ~1
   onto the person record — the roster learns from the conversation, not an org chart.
 - An interview must never be left in `generating` with no explanation: on total failure it
   is stored as `analysis_failed` **with the transcript and facts preserved**.
+- *A completed turn is never only in memory.* Checkpoint before the AI call, not after.
 - The SPA fallback (`/*` → `/index.html`) must never shadow `/api/*`.
 
 Local development: `netlify dev` (port 8888) runs the functions and Blobs for real;

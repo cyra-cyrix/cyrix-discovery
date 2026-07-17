@@ -35,11 +35,16 @@ export default async (req: Request) => {
       analysis = simulatedAnalysis(interview, knownNames)
       mode = 'simulated'
     } catch (err) {
+      // The transcript and facts survive: a failed report is ours to retry,
+      // not the participant's twenty minutes to redo. `analysis_failed` is a
+      // resumable state, not a terminal one.
       await putInterview({
         ...interview,
         status: 'analysis_failed',
         analysisError: err instanceof Error ? err.message : 'The analysis could not be completed.',
-      } as Interview)
+        revision: (interview.revision ?? 0) + 1,
+        updatedAt: Date.now(),
+      })
       return new Response('analysis failed')
     }
   }
@@ -54,6 +59,9 @@ export default async (req: Request) => {
     report: analysis.report,
     opportunities: analysis.opportunities,
     edges: analysis.edges,
+    revision: (interview.revision ?? 0) + 1,
+    updatedAt: Date.now(),
+    analysisError: null,
   })
 
   // The organization is discovered, not declared: write the team the interview

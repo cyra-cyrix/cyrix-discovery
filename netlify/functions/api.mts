@@ -12,6 +12,7 @@
 // The Anthropic key never leaves the server (participants hold no key).
 
 import type { Config, Context } from '@netlify/functions'
+import type { Interview } from '../../src/types.ts'
 import {
   allInterviews, allInvites, allPeople,
   deletePerson, getInterview, getInvite, getPerson,
@@ -54,15 +55,64 @@ export default async (req: Request, context: Context) => {
   try {
     // ---------- Participant routes (invitation token = credential) ----------
 
-    // GET /api/invite/:token → the decision + who was invited.
-    // This is what makes an invite work from a different device.
+    // GET /api/invite/:token → the decision + who was invited + any interview
+    // already underway. This is what makes an invite work from a different
+    // device, and what makes it RESUME on the same one.
+    //
+    // Only a `complete` interview closes the door. `invite.completedAt` marks
+    // that the link was used (the dashboard counts open invites with it) — it
+    // is deliberately NOT the immutability test, because an interview that was
+    // submitted but whose report failed still belongs to the participant.
     if (req.method === 'GET' && head === 'invite' && param) {
       const invite = await resolveInvite(param)
       if (!invite) return json({ decision: 'unknown' })
       if (invite.status === 'disabled') return json({ decision: 'disabled' })
-      if (invite.completedAt) return json({ decision: 'completed' })
-      const person = await getPerson(invite.personId)
-      return json({ decision: 'accept', person, invite })
+      const [person, interview] = await Promise.all([
+        getPerson(invite.personId),
+        getInterview(invite.personId) as Promise<Interview | null>,
+      ])
+      if (interview?.status === 'complete') return json({ decision: 'completed' })
+      return json({ decision: 'accept', person, invite, interview })
+    }
+
+    // POST /api/checkpoint { token, interview } → durably store an interview
+    // that is still in flight. This is the platform's durability guarantee:
+    // every completed turn lands here before the participant is shown the next
+    // question, so a refresh, a closed browser, a dropped network or a failed
+    // AI turn costs them nothing they already answered.
+    //
+    // Authorised the same way /api/submit is: the participant's invitation, or
+    // the Innovation Team's bearer for an internal test-run.
+    if (req.method === 'POST' && head === 'checkpoint') {
+      const { token, interview } = (await req.json()) as { token?: string; interview?: Interview }
+      const invite = await resolveInvite(token ?? '')
+      if (!invite && !isAdmin(req)) return json({ error: 'not authorised' }, 403)
+      if (invite && invite.status === 'disabled') return json({ error: 'invitation is not active' }, 403)
+      if (!interview?.personId) return json({ error: 'malformed checkpoint' }, 400)
+      // An invitation may only checkpoint the interview it was issued for.
+      if (invite && invite.personId !== interview.personId) return json({ error: 'not authorised' }, 403)
+
+      const stored = (await getInterview(interview.personId)) as Interview | null
+
+      // Immutability (requirement 7): a finished interview is a record, not a
+      // draft. Say so with a status the client can act on rather than retry.
+      if (stored?.status === 'complete') {
+        return json({ error: 'interview is already complete', status: 'complete' }, 409)
+      }
+      // The report is being written server-side; the conversation is over and
+      // a late checkpoint must not drag it back to in_progress. Not an error —
+      // acknowledge it so the client stops retrying.
+      if (stored?.status === 'generating') {
+        return json({ ok: true, ignored: 'generating' })
+      }
+      // Monotonicity: a retry delayed behind a newer write must never clobber
+      // it. Interviews stored before checkpointing existed have no revision.
+      if (stored && (interview.revision ?? 0) <= (stored.revision ?? 0)) {
+        return json({ ok: true, ignored: 'stale', revision: stored.revision ?? 0 })
+      }
+
+      await putInterview({ ...interview, status: 'in_progress', updatedAt: Date.now() })
+      return json({ ok: true, revision: interview.revision ?? 0 })
     }
 
     // GET /api/interview/:token → the participant polls their own submission.
@@ -101,7 +151,19 @@ export default async (req: Request, context: Context) => {
           : person)
       }
 
-      await putInterview({ ...interview, status: 'generating' })
+      // Submitting closes the conversation. Bump past any revision the client
+      // may still be retrying so a checkpoint in flight cannot reopen it.
+      const storedInterview = (await getInterview(interview.personId)) as Interview | null
+      if (storedInterview?.status === 'complete') {
+        return json({ error: 'interview is already complete', status: 'complete' }, 409)
+      }
+      await putInterview({
+        ...interview,
+        status: 'generating',
+        revision: Math.max(interview.revision ?? 0, storedInterview?.revision ?? 0) + 1,
+        updatedAt: Date.now(),
+        analysisError: null,
+      })
       if (invite) await putInvite({ ...(invite as object), token, completedAt: Date.now() } as { token: string })
 
       // Fire-and-forget: the analysis exceeds this function's time budget.

@@ -45,7 +45,10 @@ export function personStatus(
 ): PersonStatus {
   const iv = interviews[personId]
   if (iv?.status === 'complete') return 'complete'
-  if (iv && (iv.status === 'in_progress' || iv.status === 'generating')) return 'in_progress'
+  // `analysis_failed` still holds a real transcript — the person answered; only
+  // the report failed. Reporting them as merely "invited" would hide work that
+  // exists and is resumable.
+  if (iv && (iv.status === 'in_progress' || iv.status === 'generating' || iv.status === 'analysis_failed')) return 'in_progress'
   const hasActive = Object.values(invites).some((i) => i.personId === personId && i.status === 'active' && !i.completedAt)
   return hasActive ? 'invited' : 'not_invited'
 }

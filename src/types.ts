@@ -184,7 +184,10 @@ export interface ParticipantContext {
 
 // ---------- Interview (keyed by person) ----------
 
-export type InterviewStatus = 'not_started' | 'in_progress' | 'generating' | 'complete'
+/** `complete` is the only immutable state. `analysis_failed` keeps the
+ *  transcript and stays resumable — the answers are the participant's twenty
+ *  minutes; a failed report is our problem to retry, not theirs to redo. */
+export type InterviewStatus = 'not_started' | 'in_progress' | 'generating' | 'complete' | 'analysis_failed'
 
 export interface Interview {
   personId: string
@@ -202,6 +205,14 @@ export interface Interview {
   report: Report | null
   opportunities: Opportunity[]
   edges: GraphEdge[]
+  /** Monotonic, incremented by the client on every mutation. The server
+   *  rejects any checkpoint whose revision does not exceed the stored one, so
+   *  a delayed retry can never overwrite a newer turn. Interviews written
+   *  before checkpointing existed have no revision; readers treat that as 0. */
+  revision: number
+  updatedAt: number
+  /** Set only when the report could not be written; see analysis-background. */
+  analysisError: string | null
 }
 
 export const newInterview = (
@@ -225,6 +236,9 @@ export const newInterview = (
   report: null,
   opportunities: [],
   edges: [],
+  revision: 0,
+  updatedAt: Date.now(),
+  analysisError: null,
 })
 
 // ---------- Settings ----------

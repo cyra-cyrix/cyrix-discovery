@@ -50,10 +50,17 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
   // device that has never seen the roster. This is the whole point of the
   // pilot backend; `decision` is settled once, at entry, so completing the
   // interview cannot flip the session into "already completed" mid-flow.
+  //
+  // The same call returns any interview already underway. An invitation is a
+  // way back IN, not a one-shot: it resolves to `completed` only once the
+  // interview is genuinely complete, so a refresh, a closed browser or a
+  // failed report all land the participant back on their own transcript.
   const [decision, setDecision] = useState<api.InviteDecision | 'loading'>(
     internal || inviteToken === null ? 'accept' : 'loading',
   )
   const [invitedPerson, setInvitedPerson] = useState<Person | null>(null)
+  const [restored, setRestored] = useState<Interview | null>(null)
+  const restorePlaced = useRef(false)
 
   useEffect(() => {
     if (internal || !inviteToken) return
@@ -63,10 +70,43 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
         if (cancelled) return
         setDecision(r.decision)
         if (r.person) { setInvitedPerson(r.person); setPersonId(r.person.id) }
+        if (r.interview) {
+          // The server's copy is already the source of truth — adopt it, don't
+          // checkpoint it straight back.
+          store.adoptInterview(r.interview.personId, r.interview)
+          setPersonId(r.interview.personId)
+          setRestored(r.interview)
+        }
       })
       .catch(() => { if (!cancelled) setDecision('unreachable' as api.InviteDecision) })
     return () => { cancelled = true }
-  }, [inviteToken, internal])
+  }, [inviteToken, internal]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Put a restored interview back exactly where it stopped. Runs once — after
+  // that the live state, not the snapshot the invitation returned, is the
+  // truth. Must sit above the early returns below to stay a legal hook.
+  useEffect(() => {
+    if (!restored || restorePlaced.current) return
+    restorePlaced.current = true
+    if (restored.status === 'generating') {
+      // They already submitted; the report is being written server-side.
+      setStep('generating')
+      setStage('Writing the discovery report')
+      void pollUntilDone(inviteToken ?? '', restored.personId).catch((e) => {
+        setError(e instanceof Error ? e.message : 'The report could not be written.')
+        setStep('summary')
+      })
+    } else if (restored.status === 'analysis_failed') {
+      // The transcript survived; only the report failed. Let them resubmit.
+      setError(restored.analysisError
+        ? `The report could not be written (${restored.analysisError}). Your answers are saved — you can submit again.`
+        : 'The report could not be written. Your answers are saved — you can submit again.')
+      setStep('summary')
+    }
+    // `in_progress` stays on Welcome, which already offers "Continue where I
+    // left off". The affordance was built for this; it was only ever gated to
+    // the internal test-run.
+  }, [restored]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const interview = personId ? store.interviews[personId] : undefined
   const knownPerson = invitedPerson ?? (personId ? store.people[personId] : undefined)
@@ -74,9 +114,10 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
   if (decision === 'loading') return <PortalLoading />
   if (decision !== 'accept') return <InviteNotice decision={decision} />
 
-  // Resume only applies to the internal test-run: a participant's conversation
-  // lives in this browser's memory until they submit it.
-  const resumable = presetPersonId && interview?.status === 'in_progress' && interview.participant
+  // Anything unfinished with answers already in it can be resumed — by a
+  // participant on their own link, not just the internal test-run. The
+  // transcript lives in shared storage now, so there is something to resume to.
+  const resumable = interview?.status === 'in_progress' && interview.participant && interview.messages.length > 0
     ? interview
     : undefined
 
@@ -96,8 +137,9 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
       ? { ...person, department: ctx.department.trim() }
       : person)
 
-    const iv = newInterview(id, 'live', ctx, internal ? null : inviteToken)
-    void store.setInterview(id, iv)
+    const token = internal ? null : inviteToken
+    const iv = newInterview(id, 'live', ctx, token)
+    void store.setInterview(id, iv, token)
     setStep('conversation')
 
     try {
@@ -105,7 +147,7 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
       void store.updateInterview(id, (p) => ({
         ...p,
         messages: [{ id: nextId(), role: 'ai', text: opening }],
-      }))
+      }), token)
     } catch {
       // The conversation must never dead-end for a participant: if the server
       // cannot reach Claude, the offline interviewer takes over silently.
@@ -113,8 +155,29 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
         ...p,
         mode: 'simulated',
         messages: [{ id: nextId(), role: 'ai', text: simulatedOpening(ctx) }],
-      }))
+      }), token)
     }
+  }
+
+  /** Watch our own submission until the server says the report has landed.
+   *  Extracted from submit() so a restored `generating` interview can re-enter
+   *  it after a refresh: the analysis runs server-side, so rejoining it is
+   *  just polling again — there is nothing to redo. */
+  async function pollUntilDone(token: string, id: string) {
+    for (let i = 0; i < 120; i++) {
+      await new Promise((r) => setTimeout(r, 3000))
+      const { status } = await api.pollInterviewStatus(token)
+      if (status === 'complete') {
+        if (internal && onFinished) { void store.refresh(); onFinished(id); return }
+        setStep('done'); return
+      }
+      if (status === 'analysis_failed') {
+        throw new Error('The report could not be written. Your answers are saved — you can submit again.')
+      }
+    }
+    // Timed out watching, but the work is server-side and the answers are
+    // stored: say so honestly rather than implying the interview was lost.
+    setStep('done')
   }
 
   async function submit() {
@@ -144,23 +207,7 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
       // background function server-side, so it survives this browser closing.
       await api.submitInterview(inviteToken ?? '', interview, enriched)
       setStage('Writing the discovery report')
-
-      // Poll our own submission until the server says the report has landed.
-      const token = inviteToken ?? ''
-      for (let i = 0; i < 120; i++) {
-        await new Promise((r) => setTimeout(r, 3000))
-        const { status } = await api.pollInterviewStatus(token)
-        if (status === 'complete') {
-          if (internal && onFinished) { void store.refresh(); onFinished(personId); return }
-          setStep('done'); return
-        }
-        if (status === 'analysis_failed') {
-          throw new Error('The report could not be written. Your answers are saved — the Innovation Team can retry.')
-        }
-      }
-      // Timed out waiting, but the work is server-side and the answers are
-      // stored: say so honestly rather than implying the interview was lost.
-      setStep('done')
+      await pollUntilDone(inviteToken ?? '', personId)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong. Your answers are still here — try submitting again.')
       setStep('summary')
@@ -221,7 +268,7 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
               ...p,
               messages: [...p.messages, { id: nextId(), role: 'user', text: `(Correction / addition to the summary) ${text}` }],
               facts: [...p.facts, { dimension: 'flow', text }],
-            }))
+            }), internal ? null : inviteToken)
           }}
           onBackToConversation={() => setStep('conversation')}
           onSubmit={() => void submit()}
@@ -574,29 +621,35 @@ function Conversation({ interview, personId, voiceMode, onVoiceModeChange, onWra
     setDraft('')
     setError(null)
 
+    const token = interview.inviteToken
     const userMsg: ChatMessage = { id: nextId(), role: 'user', text }
     const withUser: Interview = { ...interview, messages: [...interview.messages, userMsg] }
-    void store.setInterview(personId, withUser)
+
+    // Checkpoint the answer BEFORE asking the AI anything. This ordering is
+    // what requirements 4 and 5 turn on: if the turn then fails — a timeout, a
+    // 502, a dropped connection — the answer is already durable, and the
+    // error below is honest when it says it is safe.
+    await store.setInterview(personId, withUser, token)
     setThinking(true)
 
     try {
       if (interview.mode === 'live') {
         const result = await liveTurn(store.settings.model, store.interviews, personId, withUser.messages, interview.participant, interview.inviteToken)
-        void store.updateInterview(personId, (p) => ({
+        await store.updateInterview(personId, (p) => ({
           ...p,
           messages: [...p.messages, { id: nextId(), role: 'ai', text: result.reply }],
           facts: [...p.facts, ...result.facts],
           coverage: result.coverage,
-        }))
+        }), token)
       } else {
         const result = simulatedTurn(withUser, text)
         await new Promise((r) => setTimeout(r, 700 + Math.random() * 600))
-        void store.updateInterview(personId, (p) => ({
+        await store.updateInterview(personId, (p) => ({
           ...p,
           messages: [...p.messages, { id: nextId(), role: 'ai', text: result.reply }],
           facts: [...p.facts, ...result.facts],
           coverage: result.coverage,
-        }))
+        }), token)
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'The connection hiccuped — your answer is safe. Try sending again.')
