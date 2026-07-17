@@ -83,10 +83,23 @@ export default async (req: Request, context: Context) => {
       if (!invite && !isAdmin(req)) return json({ error: 'invitation is not active' }, 403)
       if (invite && invite.status === 'disabled') return json({ error: 'invitation is not active' }, 403)
 
-      // The person may not exist centrally yet (a participant can arrive
-      // without a roster record — personFromContext).
-      const existing = await getPerson(interview.personId)
-      if (!existing && person) await putPerson(person)
+      // Enrich the roster from the conversation. An invitation carries only a
+      // name and an email; the interview is what reveals someone's role, team
+      // and location, so fill any field the Innovation Team left blank. Values
+      // they have already entered win — discovery informs the roster, it does
+      // not overwrite a human's correction.
+      const existing = (await getPerson(interview.personId)) as Record<string, string> | null
+      if (person) {
+        await putPerson(existing
+          ? {
+              ...existing,
+              designation: existing.designation || person.designation || '',
+              state: existing.state || person.state || '',
+              department: existing.department || person.department || '',
+              phone: existing.phone || person.phone || '',
+            } as { id: string }
+          : person)
+      }
 
       await putInterview({ ...interview, status: 'generating' })
       if (invite) await putInvite({ ...(invite as object), token, completedAt: Date.now() } as { token: string })

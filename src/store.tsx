@@ -55,7 +55,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
   const mounted = useRef(true)
 
-  useEffect(() => () => { mounted.current = false }, [])
+  // Re-arm on every mount. StrictMode mounts, unmounts and remounts in
+  // development: without the reset the flag stays false after the first
+  // cleanup, and every fetch result is discarded as "unmounted".
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
 
   useEffect(() => {
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)) } catch { /* non-fatal */ }

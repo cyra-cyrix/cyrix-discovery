@@ -45,22 +45,17 @@ export function PeopleScreen({ onOpenPerson }: { onOpenPerson: (personId: string
   }
 
   async function generate(personId: string) {
-    setWriteError(null)
-    try {
-      const previous = latestInviteFor(personId, invites)
-      if (previous && previous.status === 'active') await upsertInvite({ ...previous, status: 'disabled' })
-      const invite: Invite = {
-        token: generateInviteToken(),
-        personId,
-        createdAt: Date.now(),
-        status: 'active',
-        completedAt: null,
-      }
-      await upsertInvite(invite)
-      void copy(invite.token)
-    } catch (e) {
-      setWriteError(e instanceof Error ? e.message : 'Could not save the invitation.')
+    const previous = latestInviteFor(personId, invites)
+    if (previous && previous.status === 'active') await upsertInvite({ ...previous, status: 'disabled' })
+    const invite: Invite = {
+      token: generateInviteToken(),
+      personId,
+      createdAt: Date.now(),
+      status: 'active',
+      completedAt: null,
     }
+    await upsertInvite(invite)
+    await copy(invite.token)
   }
 
   async function guard(fn: () => Promise<void>) {
@@ -85,7 +80,7 @@ export function PeopleScreen({ onOpenPerson }: { onOpenPerson: (personId: string
             </p>
           </div>
           <button onClick={() => { setAdding(true); setEditing(null) }} className="btn-primary">
-            Add a person
+            Send invitation
           </button>
         </div>
         <p className="mt-4 font-sans text-label uppercase tracking-label text-neutral-700">
@@ -99,11 +94,31 @@ export function PeopleScreen({ onOpenPerson }: { onOpenPerson: (personId: string
         </div>
       )}
 
-      {(adding || editing) && (
+      {adding && (
+        <InviteForm
+          onCancel={() => setAdding(false)}
+          onSend={(name, email) => void guard(async () => {
+            // One action, one outcome: the person exists and their invitation
+            // is ready. Creating a record and then hunting for a second button
+            // was the ceremony this screen didn't need.
+            const person: Person = {
+              id: newPersonId(),
+              name, email,
+              designation: '', phone: '', state: '', reportingManager: '', department: '',
+              createdAt: Date.now(),
+            }
+            await upsertPerson(person)
+            await generate(person.id)
+            setAdding(false)
+          })}
+        />
+      )}
+
+      {editing && (
         <PersonForm
           person={editing}
-          onCancel={() => { setAdding(false); setEditing(null) }}
-          onSave={(p) => { void guard(async () => { await upsertPerson(p); setAdding(false); setEditing(null) }) }}
+          onCancel={() => setEditing(null)}
+          onSave={(p) => { void guard(async () => { await upsertPerson(p); setEditing(null) }) }}
         />
       )}
 
@@ -230,6 +245,50 @@ export function PeopleScreen({ onOpenPerson }: { onOpenPerson: (personId: string
 
 // ---------- Add / edit ----------
 
+// The invitation form. Its only job is to create an invitation, so it asks for
+// the only two things needed to address one: who, and where to send it.
+// Everything else about a person — designation, department, reporting line,
+// phone, state — is DISCOVERED by the interview or enriched afterwards in
+// PersonForm. The Person model is unchanged; this screen simply stops asking
+// the organization to describe itself before it has been listened to.
+function InviteForm({ onSend, onCancel }: {
+  onSend: (name: string, email: string) => void
+  onCancel: () => void
+}) {
+  const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const ready = name.trim() && email.trim()
+
+  return (
+    <Card className="mt-6">
+      <h2 className="font-display text-bodySmall font-heavy text-ink">Send an invitation</h2>
+      <p className="mt-2 text-bodySmall text-neutral-700">
+        Their role, team and reporting line come out of the conversation — you don't need to know them now.
+      </p>
+      <form
+        className="mt-6"
+        onSubmit={(e) => { e.preventDefault(); if (ready) onSend(name.trim(), email.trim()) }}
+      >
+        <div className="grid grid-cols-1 gap-4 tablet:grid-cols-2">
+          <Field label="Name">
+            <input value={name} onChange={(e) => setName(e.target.value)} className="input" required autoFocus />
+          </Field>
+          <Field label="Email">
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="input" required />
+          </Field>
+        </div>
+        <div className="mt-6 flex items-center gap-2">
+          <button type="submit" disabled={!ready} className="btn-primary">Send invitation</button>
+          <button type="button" onClick={onCancel} className="btn-secondary">Cancel</button>
+        </div>
+      </form>
+    </Card>
+  )
+}
+
+// Enrichment. Everything the invitation deliberately doesn't ask for lives
+// here, to be filled in by the Innovation Team once discovery has run — or
+// left alone, because the interview will have filled it in already.
 function PersonForm({ person, onSave, onCancel }: {
   person: Person | null
   onSave: (p: Person) => void
@@ -247,7 +306,10 @@ function PersonForm({ person, onSave, onCancel }: {
 
   return (
     <Card className="mt-6">
-      <h2 className="font-display text-bodySmall font-heavy text-ink">{person ? `Edit ${person.name}` : 'Add a person'}</h2>
+      <h2 className="font-display text-bodySmall font-heavy text-ink">{person ? `Edit ${person.name}` : 'Add details'}</h2>
+      <p className="mt-2 text-bodySmall text-neutral-700">
+        Blank fields fill themselves in from the interview — you only need to correct what discovery got wrong.
+      </p>
       <form
         className="mt-4"
         onSubmit={(e) => {
@@ -278,7 +340,7 @@ function PersonForm({ person, onSave, onCancel }: {
           </Field>
         </div>
         <div className="mt-6 flex items-center gap-2">
-          <button type="submit" disabled={!ready} className="btn-primary">{person ? 'Save changes' : 'Add person'}</button>
+          <button type="submit" disabled={!ready} className="btn-primary">Save changes</button>
           <button type="button" onClick={onCancel} className="btn-secondary">Cancel</button>
         </div>
       </form>

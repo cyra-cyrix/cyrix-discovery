@@ -123,9 +123,26 @@ export function Portal({ inviteToken = null, presetPersonId = null, internal = f
     setError(null)
     setStage('Sending your conversation')
     try {
+      // The invitation only knew their name and email. Everything else about
+      // them — role, team, state — was discovered in this conversation, so
+      // hand it back with the transcript: the roster learns from the
+      // interview rather than being filled in before it.
+      const ctx = interview.participant
+      const enriched: Person | null = knownPerson
+        ? {
+            ...knownPerson,
+            name: knownPerson.name && knownPerson.name !== 'Name withheld' ? knownPerson.name : (ctx?.name || knownPerson.name),
+            designation: knownPerson.designation || ctx?.designation || '',
+            state: knownPerson.state || ctx?.stateBranch || '',
+            department: knownPerson.department || ctx?.department.trim() || '',
+          }
+        : ctx
+          ? personFromContext(personId, ctx)
+          : null
+
       // Hand the transcript to shared storage. The report is written by a
       // background function server-side, so it survives this browser closing.
-      await api.submitInterview(inviteToken ?? '', interview, knownPerson ?? null)
+      await api.submitInterview(inviteToken ?? '', interview, enriched)
       setStage('Writing the discovery report')
 
       // Poll our own submission until the server says the report has landed.
