@@ -282,8 +282,20 @@ empty against a populated server).
 > interviewer mid-conversation — the 502 no longer dead-ends anyone), BL-1a/b (`/api/ai`
 > no longer ships the client's interviews map — prior findings derive server-side; turn
 > runs at `effort:'low'`). **Steps 1–2 below remain the owner's** — the log is still the
-> root-cause proof, and the timeout raise + live acceptance test still stand. The changes
-> are in the working tree, NOT yet committed/deployed.
+> root-cause proof, and the timeout raise + live acceptance test still stand.
+>
+> **Deployed 2026-07-17:** commit `cfeb6df` ("Stabilization milestone: fix all three P0
+> release blockers") pushed and confirmed live — production serves the P0 bundle
+> (`index-CoC6hC4a.js`, content-hash unique to this tree) and all six function probes
+> pass (site 200 · invite lookup 200/Blobs healthy · state 401 · checkpoint 403 ·
+> ai 403 · submit 403; the clean checkpoint 403 also confirms the local-dev 401 was the
+> `netlify dev` .html-fallback artifact). **Production verification gate before any P1
+> work:** (1) owner reads the `api` function log for a failed invocation — root-cause
+> proof for BL-1; (2) owner raises the function timeout (Site config → Functions);
+> (3) one real interview with `ANTHROPIC_API_KEY` set, confirming `mode:'live'` on the
+> stored record and that turns survive past the old failure point; (4) the multi-device
+> smoke test (DEPLOY_NETLIFY.md §6). Even a residual turn timeout now degrades to a
+> seamless offline turn (BL-3) instead of a dead conversation.
 
 **Do these in order. Step 1 is diagnosis — do not fix before reading the log.**
 
