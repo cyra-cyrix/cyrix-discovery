@@ -733,6 +733,11 @@ function Conversation({ interview, personId, voiceMode, onVoiceModeChange, onWra
           runtime: r.runtime,
           messages: [...p.messages, { id: nextId(), role: 'ai', text: r.reply }],
         }), token)
+        // The Runtime ends conversations ITSELF (safe-close after the member
+        // check). Honor it: move to the summary/submit step, or the interview
+        // sits in_progress forever and never reaches the dashboard. (Audit
+        // finding: this signal was returned by the server and dropped here.)
+        if (r.closing) onWrapUp()
       } else if (interview.mode === 'live') {
         const result = await liveTurn(store.settings.model, personId, withUser.messages, interview.participant, interview.inviteToken)
         await store.updateInterview(personId, (p) => ({

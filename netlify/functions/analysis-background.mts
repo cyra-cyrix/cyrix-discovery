@@ -52,7 +52,11 @@ export default async (req: Request) => {
   await putInterview({
     ...interview,
     status: 'complete',
-    mode,
+    // `mode` records which INTERVIEW engine held the conversation — a runtime
+    // interview stays 'runtime' (the acceptance evidence for the migration).
+    // The local `mode` variable only tracked which ANALYST wrote the report;
+    // it must not clobber the engine identity. (Audit finding.)
+    mode: interview.mode === 'runtime' ? 'runtime' : mode,
     completedAt: Date.now(),
     departmentName: analysis.departmentName,
     profile: analysis.profile,
