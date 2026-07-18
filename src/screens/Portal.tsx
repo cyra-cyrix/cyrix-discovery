@@ -871,15 +871,13 @@ function Conversation({ interview, personId, voiceMode, onVoiceModeChange, onWra
                 )}
               </button>
             )}
+            {/* Enter inserts a new line (owner decision from internal testing:
+                answers are multi-sentence accounts, not chat pings — a stray
+                Enter must never fire a half-written answer). Sending is the
+                explicit Send button only. */}
             <textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  void send()
-                }
-              }}
               rows={2}
               placeholder={listening ? 'Listening — speak naturally…' : 'Answer in your own words — specifics beat summaries…'}
               className="input min-h-[52px] flex-1 resize-none !py-2"
